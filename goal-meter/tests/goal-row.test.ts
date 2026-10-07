@@ -16,6 +16,7 @@ const goal = (over = {}) => ({
   ...over,
 })
 const prog = { fraction: 0.5, doneN: 2, n: 4, pct: 50 }
+const STEP_H1 = 1 * 2 + 22 - 4 // one step, one line
 
 test('a chat that has done nothing has no row at all, and never a /goal hint or 空闲', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['band'] }))
@@ -222,15 +223,27 @@ test('on the desktop the card sits centred over a row of any width, and every im
   }
 })
 
-test('a long step name stops well short of its time', () => {
-  const long = '读现有费率模型、资金账算法和记分牌复现路径并核对每一处口径'
-  const card = stepsSvg([{ status: 'active', title: long, tail: '1m 00s' }])
-  const title = card.svg.match(new RegExp(`x="${CARD.pad + 18}"[^>]*>([^<]*)<`))![1]!
-  expect(title.endsWith('…')).toBe(true)
-  // the name's right end and the time's left end are at least 28px apart
-  const nameEnd = CARD.pad + 18 + textW(title, 13)
-  const timeStart = CARD.max - CARD.pad - textW('1m 00s', 13)
-  expect(timeStart - nameEnd).toBeGreaterThanOrEqual(28)
+test('a long step name goes on to a second line, well clear of its time; a very long one is cut there', () => {
+  const tx = CARD.pad + 18
+  const names = (svg: string) => [...svg.matchAll(new RegExp(`x="${tx}" y="([\\d.]+)"[^>]*>([^<]*)<`, 'g'))].map(m => ({ y: +m[1]!, text: m[2]! }))
+  // Neo's own step from the jingshui chat (2026-10-07), cut short at one line before
+  const long = '读现有费率模型、资金账算法和记分牌复现路径'
+  const card = stepsSvg([{ status: 'active', title: long, tail: '1m 00s' }, { status: 'pending', title: '短', tail: '' }])
+  const t = names(card.svg)
+  expect(t).toHaveLength(3) // two lines for the long name, one for the short
+  expect(t[0]!.text + t[1]!.text).toBe(long) // whole, nothing cut
+  expect(t[1]!.y).toBeGreaterThan(t[0]!.y)
+  expect(t[2]!.y).toBeGreaterThan(t[1]!.y) // the next step moves down to make room
+  // the first line stops at least 28px short of the time, which stays on that line
+  expect(CARD.max - CARD.pad - textW('1m 00s', 13) - (tx + textW(t[0]!.text, 13))).toBeGreaterThanOrEqual(28)
+  expect(card.svg).toMatch(new RegExp(`y="${t[0]!.y}"[^>]*text-anchor="end"[^>]*>1m 00s<`))
+  // past two lines: cut with an ellipsis
+  const huge = stepsSvg([{ status: 'pending', title: long.repeat(4), tail: '' }])
+  const h = names(huge.svg)
+  expect(h).toHaveLength(2)
+  expect(h[1]!.text.endsWith('…')).toBe(true)
+  // a short name stays one line, the card as tall as before
+  expect(stepsSvg([{ status: 'done', title: '短', tail: '9s' }]).height).toBe(STEP_H1)
 })
 
 test('a crop is a window onto the same drawing', () => {
@@ -341,7 +354,8 @@ test('the row is drawn at usage-band\'s size; the card in the same type, one wid
   // the steps at the title's own 13px, nothing bold
   expect(card.svg).toContain('font-size="13"')
   expect(card.svg).not.toMatch(/font-weight="?6|font-weight:6/)
-  expect(card.svg).toContain('…')
+  // too long for one line: it goes on to a second, whole
+  expect(card.svg).toContain('不下还要再长一点')
   // one fixed width, short steps or long: as wide as the frame takes unscaled
   expect(stepsSvg([{ status: 'pending', title: '短', tail: '' }]).width).toBe(CARD.max)
   // no margin of its own: the first mark sits at the card's edge

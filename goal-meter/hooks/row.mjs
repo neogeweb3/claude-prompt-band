@@ -207,7 +207,7 @@ export function rowSpans(r, columns = 100) {
 // The steps read at the row's own 13px, regular weight, the same type as the title,
 // on a card of one fixed width, the frame's full 360 without scaling it down
 export const FRAME = { w: 360, pad: 12 }
-const STEP = { h: 22, top: 1, size: 13, gap: 28 }
+const STEP = { h: 22, top: 1, size: 13, gap: 28, line: 18 }
 export const CARD = { min: FRAME.w - FRAME.pad * 2, max: FRAME.w - FRAME.pad * 2, pad: 2 }
 const MARK = { done: '✓', active: '▶', pending: '○' }
 
@@ -219,27 +219,40 @@ export const fit = (v, room, size) => {
   return chars.join('') + '…'
 }
 
+// A name too long for its line goes on to a second line under it (the time stays on the first);
+// past that it is cut. The card cannot grow instead: the desktop caps its frame at 360.
+export function wrap(v, first, rest, size) {
+  if (textW(v, size) <= first) return [v]
+  const chars = [...v]
+  let n = 0
+  while (n < chars.length && textW(chars.slice(0, n + 1).join(''), size) <= first) n++
+  // a Latin word is kept whole when a space comes late enough in the line
+  const sp = chars.slice(0, n).lastIndexOf(' ')
+  if (sp > n * 0.6) n = sp + 1
+  return [chars.slice(0, n).join('').trimEnd(), fit(chars.slice(n).join('').trimStart(), rest, size)]
+}
+
 export function stepsSvg(steps) {
   // a clear column of space between a step's name and its time, never the name running into it
   const tails = steps.map((t) => (t.tail ? textW(t.tail, STEP.size) + STEP.gap : 0))
   const want = Math.max(...steps.map((t, i) => 18 + textW(t.title, STEP.size) + tails[i]), 0) + CARD.pad * 2
   const width = Math.round(Math.min(CARD.max, Math.max(CARD.min, want)))
-  const h = STEP.top * 2 + steps.length * STEP.h - 4
+  const x0 = CARD.pad
+  const tx = x0 + 18
+  const lines = steps.map((s, i) => wrap(s.title, width - tx - CARD.pad - tails[i], width - tx - CARD.pad, STEP.size))
+  const tops = lines.reduce((acc, l) => [...acc, acc[acc.length - 1] + STEP.h + (l.length - 1) * STEP.line], [STEP.top])
+  const h = tops[steps.length] + STEP.top - 4
   const defs = []
   const rows = steps.map((s, i) => {
-    const y = STEP.top + i * STEP.h + 15
+    const y = tops[i] + 15
     const hue = s.status === 'done' ? HUE.done : null
     const mark = MARK[s.status] || '○'
     const tail = s.tail ? s.tail : ''
-    const x0 = CARD.pad
-    const tx = x0 + 18
-    const title = fit(s.title, width - tx - CARD.pad - tails[i], STEP.size)
     const markSvg = hue
       ? `<text x="${x0}" y="${y}" font-size="${STEP.size}" class="ink" style="--l:${lighten(hue, -0.38)};--d:${lighten(hue, 0.25)}">${mark}</text>`
       : `<text x="${x0}" y="${y}" font-size="${STEP.size}" class="${s.status === 'active' ? 'lead' : 'mute'}">${mark}</text>`
-    const titleSvg = s.status === 'active'
-      ? `<text x="${tx}" y="${y}" font-size="${STEP.size}" class="lead">${esc(title)}</text>`
-      : `<text x="${tx}" y="${y}" font-size="${STEP.size}" class="${s.status === 'pending' ? 'lead' : 'mute'}">${esc(title)}</text>`
+    const cls = s.status === 'active' || s.status === 'pending' ? 'lead' : 'mute'
+    const titleSvg = lines[i].map((l, k) => `<text x="${tx}" y="${y + k * STEP.line}" font-size="${STEP.size}" class="${cls}">${esc(l)}</text>`).join('')
     const tailSvg = tail ? `<text x="${width - CARD.pad}" y="${y}" font-size="${STEP.size}" text-anchor="end" class="mute">${esc(tail)}</text>` : ''
     return markSvg + titleSvg + tailSvg
   })
