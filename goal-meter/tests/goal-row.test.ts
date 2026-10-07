@@ -234,6 +234,20 @@ test('a long step name stops well short of its time', () => {
   expect(timeStart - nameEnd).toBeGreaterThanOrEqual(28)
 })
 
+test('every long name is cut at the same place, with or without a time, leaving the time its room', () => {
+  // Neo's step from the jingshui chat (2026-10-07) that ran to the card's edge with no time beside it
+  const long = '写阶梯费率模型 + 盈透券商模型 + 现金账户并编译'
+  const tx = CARD.pad + 18
+  const titleOf = (svg: string) => svg.match(new RegExp(`x="${tx}"[^>]*>([^<]*)<`))![1]!
+  const bare = titleOf(stepsSvg([{ status: 'pending', title: long, tail: '' }]).svg)
+  const timed = titleOf(stepsSvg([{ status: 'done', title: long, tail: '4m 16s' }]).svg)
+  const dash = titleOf(stepsSvg([{ status: 'done', title: long, tail: '—' }]).svg)
+  expect(bare.endsWith('…')).toBe(true)
+  expect(timed).toBe(bare)
+  expect(dash).toBe(bare)
+  expect(CARD.max - CARD.pad - textW('12m 34s', 13) - (tx + textW(bare, 13))).toBeGreaterThanOrEqual(28)
+})
+
 test('a crop is a window onto the same drawing', () => {
   const row = rowSvg(rowOf(goal(), prog, 0)!)
   const piece = cropSvg(row, 10, 50)

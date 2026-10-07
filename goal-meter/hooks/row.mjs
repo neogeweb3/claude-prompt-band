@@ -210,6 +210,7 @@ export const FRAME = { w: 360, pad: 12 }
 const STEP = { h: 22, top: 1, size: 13, gap: 28 }
 export const CARD = { min: FRAME.w - FRAME.pad * 2, max: FRAME.w - FRAME.pad * 2, pad: 2 }
 const MARK = { done: '✓', active: '▶', pending: '○' }
+const TIME_ROOM = '12m 34s' // the time column is at least this wide
 
 // Cut text to fit `room` px, by the same measure the row uses
 export const fit = (v, room, size) => {
@@ -220,8 +221,10 @@ export const fit = (v, room, size) => {
 }
 
 export function stepsSvg(steps) {
-  // a clear column of space between a step's name and its time, never the name running into it
-  const tails = steps.map((t) => (t.tail ? textW(t.tail, STEP.size) + STEP.gap : 0))
+  // a clear column of space between a step's name and its time, never the name running into it;
+  // every name is cut at the same place, a time there or not yet, so the time always has its room
+  // and a name does not shrink when its step starts
+  const tails = steps.map((t) => Math.max(t.tail ? textW(t.tail, STEP.size) : 0, textW(TIME_ROOM, STEP.size)) + STEP.gap)
   const want = Math.max(...steps.map((t, i) => 18 + textW(t.title, STEP.size) + tails[i]), 0) + CARD.pad * 2
   const width = Math.round(Math.min(CARD.max, Math.max(CARD.min, want)))
   const h = STEP.top * 2 + steps.length * STEP.h - 4
