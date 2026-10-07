@@ -140,9 +140,13 @@ export function listText(goal) {
   return lines.join('\n')
 }
 
-// When the latest finished step ended, else when the plan began; 0 for neither
-export function lastFinish(goal) {
-  return goal.tasks.reduce((at, t) => (t.status === 'done' && t.doneAt > at ? t.doneAt : at), goal.planAt || 0)
+// The next step to do starts by itself when nothing is under way (marked `auto`)
+function autoStart(goal, now) {
+  if (goal.status !== 'running') return
+  const live = goal.tasks.filter((t) => !t.replaced && t.status !== 'dropped')
+  if (live.some((t) => t.status === 'active')) return
+  const next = live.find((t) => t.status === 'pending')
+  if (next) Object.assign(next, { status: 'active', startedAt: now, auto: true })
 }
 
 // One call of the task tool. Returns { ok, text } and changes the goal in place.
@@ -177,10 +181,12 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
         t.startedAt = t.startedAt || now
         if (by) t.by = clean(by, 32)
       } else if (action === 'done') {
+        // never started (marked done with others at the end, or skipped to): when it ran is not
+        // known, so it shows no time rather than a made-up one
+        if (t.status === 'pending') t.untimed = true
         t.status = 'done'
-        // never started: it ran from the moment the step before it finished (or the plan began),
-        // not from now, which would leave it no time at all
-        t.startedAt = t.startedAt || lastFinish(goal) || now
+        t.startedAt = t.startedAt || now
+        t.auto = false
         t.doneAt = now
         if (input.note) t.note = clean(input.note, 140)
       } else {
@@ -192,20 +198,19 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
   } else if (action !== 'show') {
     return fail(`unknown action "${action}". Use plan, add, start, done, drop, or show.`)
   }
+  // Steps run in order: whenever none is under way, the next one starts by itself, so a plan
+  // marked only with "done" still times every step. A "start" of another step puts back the one
+  // that started by itself, as if it never had.
+  if (action === 'start') {
+    const chosen = new Set(idsOf(input))
+    for (const t of goal.tasks) if (t.auto && t.status === 'active' && !chosen.has(t.id)) Object.assign(t, { status: 'pending', startedAt: 0, auto: false })
+  }
+  if (action !== 'show') autoStart(goal, now)
   goal.updatedAt = now
   // done without a start: the row can only give such a step the time since the step before it
   // ended, so a batch marked at the end reads as one long step and the rest at 0s
-  const hint = unstarted ? `\n${unstarted} step(s) marked done without a "start": the row times a step from its "start". Call "start" when you begin each step, then "done" when it is finished.` : ''
+  const hint = unstarted ? `\n${unstarted} step(s) marked done without having started show no time. Call "done" as each step finishes: the next one starts by itself.` : ''
   return { ok: true, text: listText(goal) + hint }
-}
-
-// Said once while a plan runs, Claude keeps working and no step is marked under way
-export function stepNudge(tool) {
-  return (
-    `No step of your plan is marked under way, so the progress row cannot time the work. ` +
-    `Call ${tool} with action "start" and the id of the step you are on now ("done" first for any you already finished), ` +
-    `and keep marking each step as it happens.`
-  )
 }
 
 // The goal check's verdict, from the text the engine records for it. The shape
@@ -281,7 +286,8 @@ export function autoPlan(tool) {
     `before your first other tool call, with action "plan", "goal" (a few words naming the whole task, in the user's language) and the steps in order, ` +
     `each with a short title in the user's language and a size S, M or L. ` +
     `This includes picking up earlier work: "continue", resuming from a handoff, or fixing what the user just reported. ` +
-    `Then call "start" with a step's id when you begin it and "done" when it is finished, one step at a time, each as it happens; "add" new steps you discover, ` +
+    `The first step starts by itself. Call "done" with a step's id the moment it is finished, one step at a time, each as it happens, never several at the end: ` +
+    `the next step then starts by itself. Call "start" only to take up a step out of order. "add" new steps you discover, ` +
     `"drop" ones no longer needed. A new, unrelated request gets a new "plan". ` +
     `List only steps you do yourself, never one that waits on the user (their reply, a screenshot, a check on their side). ` +
     `Before you end your turn, every step is done or dropped, unless background work you started is still carrying it. ` +

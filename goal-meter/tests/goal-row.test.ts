@@ -337,7 +337,7 @@ test('the row is drawn at usage-band\'s size; the card in the same type, one wid
   expect(card.svg).toContain(`x="${CARD.pad}"`)
 })
 
-test('every finished step shows a time, even one marked done without a start', async ($, on) => {
+test('a finished step shows its time; one never started (marked done with others) shows none', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))
   const clock = mock.clock(on)
@@ -345,14 +345,14 @@ test('every finished step shows a time, even one marked done without a start', a
   await clock.advance(60000)
   await tasks('plan', { goal: '计时', tasks: [{ title: '甲', size: 'S' }, { title: '乙', size: 'S' }, { title: '丙', size: 'S' }] })
   await clock.advance(3 * 60000)
-  await tasks('done', { id: 1 }) // never started: timed from the plan's start
+  await tasks('done', { id: 1 }) // started by itself with the plan
   await clock.advance(10000)
-  await tasks('done', { ids: [2, 3] }) // a batch: the second had no time of its own
+  await tasks('done', { ids: [2, 3] }) // 乙 started by itself when 甲 was done; 丙 never started
   const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
   const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
   await ui.unmount()
   const tails = [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])
-  expect(tails).toEqual(['3m 00s', '10s', '0s'])
+  expect(tails).toEqual(['3m 00s', '10s'])
 })
 
 test('a step worked on without being marked started still shows its clock, by the second', async ($, on) => {
@@ -404,7 +404,7 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await tasks('plan', { goal: '收尾', tasks: [{ title: '甲' }, { title: '乙' }, { title: '丙' }, { title: '丁' }] })
   for (const id of [1, 2]) { await clock.advance(10000); await tasks('done', { id }) }
   await clock.advance(5000)
-  // a background task is still carrying 丙 when the turn stops: its clock and the estimate go on
+  // 丙 started by itself; a background task is still carrying it when the turn stops: its clock and the estimate go on
   await stop(1)
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
   await clock.advance(33000)
@@ -417,11 +417,11 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
   await clock.advance(60000)
   v = await view()
-  expect(v.tails).toEqual(['10s', '10s'])
+  expect(v.tails).toEqual(['10s', '10s', '38s']) // 丙 stands where the work stopped
   expect(v.row).not.toContain('剩约')
-  // a step marked under way stops where the work stopped, not counting on
+  // taking up 丁 out of order puts 丙 back (it had only started by itself); 丁's clock stops with the work
   await $.turn.start({ text: '继续', turnId: 't3' })
-  await tasks('start', { id: 3 })
+  await tasks('start', { id: 4 })
   await clock.advance(7000)
   await stop(0)
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't3' })
@@ -429,25 +429,25 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   expect((await view()).tails).toEqual(['10s', '10s', '7s'])
 })
 
-test('working on a plan with no step marked under way gets one reminder; marking at the end is flagged', async ($, on) => {
+test('a plan marked only with "done" times every step; a "done" for a step never started says so', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))
-  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
-  mock.clock(on)
+  const clock = mock.clock(on)
   const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never) as Promise<{ result?: string }>
-  const call = () => $.tool.call({ tool: 'Bash', command: 'ls' } as never) as Promise<{ context?: readonly string[] }>
-  await $.turn.start({ text: '做', turnId: 't1' })
-  await tasks('plan', { goal: '五步', tasks: [{ title: '甲' }, { title: '乙' }, { title: '丙' }] })
-  expect((await call()).context).toBeUndefined()
-  expect((await call()).context).toBeUndefined()
-  const third = await call()
-  expect(third.context?.[0]).toContain('"start"')
-  expect((await call()).context).toBeUndefined() // once
-  // marked under way: no reminder however long the step runs
-  await tasks('start', { id: 1 })
-  for (let i = 0; i < 4; i++) expect((await call()).context).toBeUndefined()
-  // started then done: no flag; done without a start, in a batch: flagged in the reply
-  expect((await tasks('done', { id: 1 })).result).not.toContain('without a "start"')
-  expect((await tasks('done', { ids: [2, 3] })).result).toContain('2 step(s) marked done without a "start"')
+  await clock.advance(60000)
+  await tasks('plan', { goal: '只标完成', tasks: [{ title: '甲' }, { title: '乙' }, { title: '丙' }, { title: '丁' }] })
+  await clock.advance(42000)
+  expect((await tasks('done', { id: 1 })).result).not.toContain('without having started')
+  await clock.advance(65000)
+  await tasks('done', { id: 2 })
+  await clock.advance(9000)
+  // 丙 is under way by itself; 丁 marked with it at the end never started
+  const r = await tasks('done', { ids: [3, 4] })
+  expect(r.result).toContain('1 step(s) marked done without having started')
+  const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+  const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
+  await ui.unmount()
+  expect([...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])).toEqual(['42s', '1m 05s', '9s'])
 })
 
 test('with no plan, hovering lists the turn\'s latest operations with their times', async ($, on) => {

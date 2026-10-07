@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, eta, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf, lastFinish, stepNudge } from './plan.mjs'
+import { newGoal, applyAction, progress, eta, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -27,7 +27,6 @@ const REOPEN_MS = 5 * 60000 // a goal closed on its tasks reopens if Claude carr
 const NUDGE_AFTER = 4 // tool calls into a goal with no plan before the reminder
 const CELEBRATE_MS = 6000 // a finished plan's rainbow sweep plays only in renders this soon after
 const AUTO_NUDGE_AT = 3 // tool calls into a turn with no plan before the reminder outside /goal
-const STEP_NUDGE_AT = 3 // tool calls with a plan running and no step under way before the reminder to mark one
 const WRITERS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
 
 let G = null
@@ -45,8 +44,6 @@ let working = false // a main turn is running
 let background = 0 // background tasks still in flight when the last turn stopped
 let turnCalls = 0 // its tool calls so far, the mod's own left out
 let turnNudged = false
-let unmarked = 0 // tool calls since the task tool was last called, while the plan has no step under way
-let stepNudged = false
 let ops = [] // this turn's tool calls, newest last: the hover card's details while there is no plan
 const OPS_KEEP = 8
 let turnAt = 0 // when the running main turn started
@@ -188,10 +185,6 @@ async function serveTool($, e) {
     // tracked like a /goal, named after the task Claude gave, else its first step
     G = newGoal({ sessionId, condition: named || first.title, now, cwd, kind: 'plan' })
     hidden = false
-  }
-  if (!e.agentId) {
-    unmarked = 0
-    stepNudged = false
   }
   const by = e.by ? String(e.by) : e.agentId ? agentNames.get(e.agentId) || 'agent' : ''
   const r = applyAction(G, e, { now, by })
@@ -400,17 +393,6 @@ export function register(on) {
       if (!r || r.deny || !('result' in r)) return r
       return { ...r, context: [...(r.context || []), autoNudge(toolName)] }
     }
-    // a plan running and Claude at work on it with no step marked under way: one reminder, read
-    // after this call's result, to mark the step it is on, so the row times each step as it happens
-    if (!e.agentId && e.tool !== 'ToolSearch' && G && G.status === 'running' && (G.planned || G.planAt) && impliedStep(G)) {
-      unmarked += 1
-      if (unmarked >= STEP_NUDGE_AT && !stepNudged) {
-        stepNudged = true
-        const r = await run()
-        if (!r || r.deny || !('result' in r)) return r
-        return { ...r, context: [...(r.context || []), stepNudge(toolName)] }
-      }
-    }
     if (G && G.status === 'running' && G.kind === 'goal' && !(G.planned || G.planAt) && !e.agentId) {
       if (settings.strict && WRITERS.has(e.tool)) return { deny: strictDeny(toolName) }
       if (e.tool !== 'ToolSearch') callsWithoutPlan += 1
@@ -590,25 +572,13 @@ function footerLabel() {
   return ''
 }
 
-// The step the work is on when Claude never marked one started (it went straight on, say into a
-// background task): the first step still to do, while the plan runs and nothing is marked under way
-function impliedStep(g) {
-  if (!g || g.status !== 'running') return null
-  const tasks = visibleTasks(g)
-  if (tasks.some((t) => t.status === 'active')) return null
-  return tasks.find((t) => t.status === 'pending') || null
-}
-
 function taskTail(t) {
-  // every finished step shows its time, to the second: 42s, 3m 05s, 1h 02m
-  if (t.status === 'done') return duration(t.doneAt - t.startedAt)
+  // a finished step shows its time, to the second (42s, 3m 05s, 1h 02m); one never started, none
+  if (t.status === 'done') return t.untimed ? '' : duration(t.doneAt - t.startedAt)
   // the running step shows its clock alone: the ▶ already says it is under way
   // (stopped where the work stopped, when nothing runs any more)
   const at = busy(G) ? now : (G && G.lastTurnEnd) || now
   if (t.status === 'active') return (t.by ? t.by + ' · ' : '') + duration(Math.max(0, at - t.startedAt))
-  // a step worked on without being marked started counts from when the step before it finished,
-  // the same start a step marked done without a start gets; only while work is going on
-  if (t.status === 'pending' && busy(G) && t === impliedStep(G)) return duration(now - (lastFinish(G) || G.startedAt))
   if (t.status === 'dropped') return '已放弃' + (t.note ? '：' + t.note : '')
   return ''
 }
