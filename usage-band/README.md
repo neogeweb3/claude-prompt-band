@@ -13,7 +13,7 @@ Each metric has its own color and turns red when it needs attention: a limit or 
 **Terminal**
 
 ```
-5h ■■■■■■■■ 78% · 1h18m  7d ■■■■■■■■ 48% · 5d3h  󰌨 398K/1M  󰓾 100%
+5h ■■■■■■■■ 78% · 1h 18m  7d ■■■■■■■■ 48% · 5d 3h  󰌨 398K/1M  󰓾 100%
 ```
 
 The line fits itself to the terminal width: on a narrow terminal it drops the bars first, then the countdowns.

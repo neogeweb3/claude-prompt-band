@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, eta, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, eta, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf, lastFinish } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -279,6 +279,12 @@ export function register(on) {
       if (paneOpen || G || lastTurn) $.ui.invalidate('ui.render')
     })
     $.clock.every(10000, () => readRecording($).catch(() => {}))
+    // a step's clock counts by the second, as the background-task panel's does
+    $.clock.every(1000, async () => {
+      if (!G || G.status !== 'running') return
+      now = await $.clock.now()
+      $.ui.invalidate('ui.render')
+    })
     return next(e)
   })
 
@@ -556,11 +562,23 @@ function footerLabel() {
   return ''
 }
 
+// The step the work is on when Claude never marked one started (it went straight on, say into a
+// background task): the first step still to do, while the plan runs and nothing is marked under way
+function impliedStep(g) {
+  if (!g || g.status !== 'running') return null
+  const tasks = visibleTasks(g)
+  if (tasks.some((t) => t.status === 'active')) return null
+  return tasks.find((t) => t.status === 'pending') || null
+}
+
 function taskTail(t) {
-  // every finished step shows its time, to the second: 42s, 3m05s, 1h02m
+  // every finished step shows its time, to the second: 42s, 3m 05s, 1h 02m
   if (t.status === 'done') return duration(t.doneAt - t.startedAt)
   // the running step shows its clock alone: the ▶ already says it is under way
   if (t.status === 'active') return (t.by ? t.by + ' · ' : '') + duration(now - t.startedAt)
+  // a step worked on without being marked started counts from when the step before it finished,
+  // the same start a step marked done without a start gets
+  if (t.status === 'pending' && t === impliedStep(G)) return duration(now - (lastFinish(G) || G.startedAt))
   if (t.status === 'dropped') return '已放弃' + (t.note ? '：' + t.note : '')
   return ''
 }

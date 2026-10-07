@@ -350,7 +350,35 @@ test('every finished step shows a time, even one marked done without a start', a
   const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
   await ui.unmount()
   const tails = [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])
-  expect(tails).toEqual(['3m00s', '10s', '0s'])
+  expect(tails).toEqual(['3m 00s', '10s', '0s'])
+})
+
+test('a step worked on without being marked started still shows its clock, by the second', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const tails = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
+    await ui.unmount()
+    return [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])
+  }
+  await clock.advance(60000)
+  await tasks('plan', { goal: '后台', tasks: [{ title: '甲', size: 'S' }, { title: '乙', size: 'S' }, { title: '丙', size: 'S' }] })
+  await clock.advance(20000)
+  await tasks('done', { id: 1 })
+  // Claude went straight on to 乙 (a background task, say) without marking it started:
+  // it counts from when 甲 finished; 丙 still shows nothing
+  await clock.advance(38000)
+  expect(await tails()).toEqual(['20s', '38s'])
+  await clock.advance(1000)
+  expect(await tails()).toEqual(['20s', '39s'])
+  // once a step is marked under way, only that one runs a clock
+  await tasks('start', { id: 3 })
+  const t = await tails()
+  expect(t[0]).toBe('20s')
+  expect(t).toHaveLength(2) // 甲's time and 丙's clock: 乙 is no longer the step being worked on
 })
 
 test('with no plan, hovering lists the turn\'s latest operations with their times', async ($, on) => {

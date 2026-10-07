@@ -41,8 +41,8 @@ export const fmtLeft = (ms: number): string => {
   const d = Math.floor(mins / 1440)
   const h = Math.floor((mins % 1440) / 60)
   const m = mins % 60
-  if (d > 0) return `${d}d${h}h`
-  if (h > 0) return `${h}h${m}m`
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
   return `${m}m`
 }
 
@@ -181,8 +181,8 @@ const mute = (x: number, y: number, v: string, size: number) =>
 type Layers = { stat: string; motion: string }
 type Group = { width: number; draw: (x: number) => Layers }
 
-// 5h 60% ▬▬▬▬── 1h49m: the figure first, so the state reads before the bar
-// 5h ▬▬▬▬▬▬──── 69% │ 1h31m: label, bar, figure, then when it resets
+// 5h 60% ▬▬▬▬── 1h 49m: the figure first, so the state reads before the bar
+// 5h ▬▬▬▬▬▬──── 69% │ 1h 31m: label, bar, figure, then when it resets
 const limitGroup = (id: string, label: string, l: Limit, hue: string, at: number): Group => {
   const pct = Math.round(l.percentUsed)
   const color = pct >= 80 ? RED : hue

@@ -141,7 +141,7 @@ export function listText(goal) {
 }
 
 // When the latest finished step ended, else when the plan began; 0 for neither
-function lastFinish(goal) {
+export function lastFinish(goal) {
   return goal.tasks.reduce((at, t) => (t.status === 'done' && t.doneAt > at ? t.doneAt : at), goal.planAt || 0)
 }
 

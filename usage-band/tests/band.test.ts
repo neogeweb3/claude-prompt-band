@@ -14,8 +14,8 @@ test('formats tokens, countdowns and hit rate', async () => {
   expect(fmtTokens(15_600)).toBe('15.6K')
   expect(fmtTokens(100_000)).toBe('100K')
   expect(fmtTokens(1_000_000)).toBe('1M')
-  expect(fmtLeft((2 * 60 + 40) * 60_000)).toBe('2h40m')
-  expect(fmtLeft((31 * 60) * 60_000)).toBe('1d7h')
+  expect(fmtLeft((2 * 60 + 40) * 60_000)).toBe('2h 40m')
+  expect(fmtLeft((31 * 60) * 60_000)).toBe('1d 7h')
   expect(hitRate({ input: 50, output: 10, cacheRead: 900, cacheWrite: 50 })).toBe(90)
   expect(hitRate({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })).toBe(null)
 })
@@ -187,7 +187,7 @@ test('a redraw that changes nothing visible is not written', async ($, on) => {
     context: { tokens: 100_000, window: 1_000_000, percent: 10 },
     rateLimits: [{ kind: 'five_hour', percentUsed: 20, resetsAt: new Date(at + 3 * 3_600_000 + 30 * 60_000).toISOString() }],
   }
-  // 3h30m and 3h30m less 20 seconds both read 3h30m; 100,040 tokens still reads 100K
+  // 3h 30m and 3h 30m less 20 seconds both read 3h 30m; 100,040 tokens still reads 100K
   expect(desktopSvg(m, null, at).svg).toBe(desktopSvg(m, null, at + 20_000).svg)
   expect(desktopSvg(m, null, at).svg).toBe(
     desktopSvg({ ...m, context: { ...m.context, tokens: 100_040 } }, null, at).svg,

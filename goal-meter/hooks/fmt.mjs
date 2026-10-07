@@ -19,15 +19,15 @@ export function duration(ms) {
   const s = Math.max(0, Math.round((Number(ms) || 0) / 1000))
   if (s < 60) return s + 's'
   const m = Math.floor(s / 60)
-  if (m < 60) return m + 'm' + String(s % 60).padStart(2, '0') + 's'
+  if (m < 60) return m + 'm ' + String(s % 60).padStart(2, '0') + 's'
   const h = Math.floor(m / 60)
-  return h + 'h' + String(m % 60).padStart(2, '0') + 'm'
+  return h + 'h ' + String(m % 60).padStart(2, '0') + 'm'
 }
 
 export function minutes(ms) {
   const m = Math.round((Number(ms) || 0) / 60000)
   if (m <= 60) return m + 'm'
-  return Math.floor(m / 60) + 'h' + String(m % 60).padStart(2, '0') + 'm'
+  return Math.floor(m / 60) + 'h ' + String(m % 60).padStart(2, '0') + 'm'
 }
 
 export function clock(ts) {
