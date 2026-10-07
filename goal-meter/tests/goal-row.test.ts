@@ -84,6 +84,8 @@ test('no reminder once a plan is running', async ($, on) => {
   mock.clock(on)
   await $.turn.start({ text: '做个功能', turnId: 't1' })
   await $.tool.call({ tool: 'mcp__goal-meter__tasks', action: 'plan', goal: '做个功能', tasks: [{ title: '写', size: 'M' }] })
+  // (with its step marked under way: a plan with none gets its own reminder, tested below)
+  await $.tool.call({ tool: 'mcp__goal-meter__tasks', action: 'start', id: 1 } as never)
   for (let i = 0; i < 5; i++) {
     const r = (await $.tool.call({ tool: 'Bash', command: 'ls' } as never)) as { context?: readonly string[] }
     expect(r.context).toBeUndefined()
@@ -425,6 +427,27 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't3' })
   await clock.advance(120000)
   expect((await view()).tails).toEqual(['10s', '10s', '7s'])
+})
+
+test('working on a plan with no step marked under way gets one reminder; marking at the end is flagged', async ($, on) => {
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never) as Promise<{ result?: string }>
+  const call = () => $.tool.call({ tool: 'Bash', command: 'ls' } as never) as Promise<{ context?: readonly string[] }>
+  await $.turn.start({ text: '做', turnId: 't1' })
+  await tasks('plan', { goal: '五步', tasks: [{ title: '甲' }, { title: '乙' }, { title: '丙' }] })
+  expect((await call()).context).toBeUndefined()
+  expect((await call()).context).toBeUndefined()
+  const third = await call()
+  expect(third.context?.[0]).toContain('"start"')
+  expect((await call()).context).toBeUndefined() // once
+  // marked under way: no reminder however long the step runs
+  await tasks('start', { id: 1 })
+  for (let i = 0; i < 4; i++) expect((await call()).context).toBeUndefined()
+  // started then done: no flag; done without a start, in a batch: flagged in the reply
+  expect((await tasks('done', { id: 1 })).result).not.toContain('without a "start"')
+  expect((await tasks('done', { ids: [2, 3] })).result).toContain('2 step(s) marked done without a "start"')
 })
 
 test('with no plan, hovering lists the turn\'s latest operations with their times', async ($, on) => {

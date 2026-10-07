@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, eta, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf, lastFinish } from './plan.mjs'
+import { newGoal, applyAction, progress, eta, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf, lastFinish, stepNudge } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -27,6 +27,7 @@ const REOPEN_MS = 5 * 60000 // a goal closed on its tasks reopens if Claude carr
 const NUDGE_AFTER = 4 // tool calls into a goal with no plan before the reminder
 const CELEBRATE_MS = 6000 // a finished plan's rainbow sweep plays only in renders this soon after
 const AUTO_NUDGE_AT = 3 // tool calls into a turn with no plan before the reminder outside /goal
+const STEP_NUDGE_AT = 3 // tool calls with a plan running and no step under way before the reminder to mark one
 const WRITERS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit'])
 
 let G = null
@@ -44,6 +45,8 @@ let working = false // a main turn is running
 let background = 0 // background tasks still in flight when the last turn stopped
 let turnCalls = 0 // its tool calls so far, the mod's own left out
 let turnNudged = false
+let unmarked = 0 // tool calls since the task tool was last called, while the plan has no step under way
+let stepNudged = false
 let ops = [] // this turn's tool calls, newest last: the hover card's details while there is no plan
 const OPS_KEEP = 8
 let turnAt = 0 // when the running main turn started
@@ -185,6 +188,10 @@ async function serveTool($, e) {
     // tracked like a /goal, named after the task Claude gave, else its first step
     G = newGoal({ sessionId, condition: named || first.title, now, cwd, kind: 'plan' })
     hidden = false
+  }
+  if (!e.agentId) {
+    unmarked = 0
+    stepNudged = false
   }
   const by = e.by ? String(e.by) : e.agentId ? agentNames.get(e.agentId) || 'agent' : ''
   const r = applyAction(G, e, { now, by })
@@ -392,6 +399,17 @@ export function register(on) {
       const r = await run()
       if (!r || r.deny || !('result' in r)) return r
       return { ...r, context: [...(r.context || []), autoNudge(toolName)] }
+    }
+    // a plan running and Claude at work on it with no step marked under way: one reminder, read
+    // after this call's result, to mark the step it is on, so the row times each step as it happens
+    if (!e.agentId && e.tool !== 'ToolSearch' && G && G.status === 'running' && (G.planned || G.planAt) && impliedStep(G)) {
+      unmarked += 1
+      if (unmarked >= STEP_NUDGE_AT && !stepNudged) {
+        stepNudged = true
+        const r = await run()
+        if (!r || r.deny || !('result' in r)) return r
+        return { ...r, context: [...(r.context || []), stepNudge(toolName)] }
+      }
     }
     if (G && G.status === 'running' && G.kind === 'goal' && !(G.planned || G.planAt) && !e.agentId) {
       if (settings.strict && WRITERS.has(e.tool)) return { deny: strictDeny(toolName) }

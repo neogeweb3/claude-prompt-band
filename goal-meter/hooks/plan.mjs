@@ -149,6 +149,7 @@ export function lastFinish(goal) {
 export function applyAction(goal, input, { now, by = '' } = {}) {
   const action = String(input.action || 'show').toLowerCase()
   const fail = (msg) => ({ ok: false, text: `Goal meter: ${msg}\n${listText(goal)}` })
+  let unstarted = 0
   if (action === 'plan' || action === 'add') {
     const list = normalizeTasks(input.tasks)
     if (!list.length) return fail(`"${action}" needs tasks: [{ "title": "...", "size": "S" | "M" | "L" }].`)
@@ -169,6 +170,7 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
     const tasks = ids.map((id) => goal.tasks.find((t) => t.id === id && !t.replaced))
     const missing = ids.filter((id, i) => !tasks[i])
     if (missing.length) return fail(`no task #${missing.join(', #')}.`)
+    if (action === 'done') unstarted = tasks.filter((t) => t.status === 'pending').length
     for (const t of tasks) {
       if (action === 'start') {
         t.status = 'active'
@@ -191,7 +193,19 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
     return fail(`unknown action "${action}". Use plan, add, start, done, drop, or show.`)
   }
   goal.updatedAt = now
-  return { ok: true, text: listText(goal) }
+  // done without a start: the row can only give such a step the time since the step before it
+  // ended, so a batch marked at the end reads as one long step and the rest at 0s
+  const hint = unstarted ? `\n${unstarted} step(s) marked done without a "start": the row times a step from its "start". Call "start" when you begin each step, then "done" when it is finished.` : ''
+  return { ok: true, text: listText(goal) + hint }
+}
+
+// Said once while a plan runs, Claude keeps working and no step is marked under way
+export function stepNudge(tool) {
+  return (
+    `No step of your plan is marked under way, so the progress row cannot time the work. ` +
+    `Call ${tool} with action "start" and the id of the step you are on now ("done" first for any you already finished), ` +
+    `and keep marking each step as it happens.`
+  )
 }
 
 // The goal check's verdict, from the text the engine records for it. The shape
