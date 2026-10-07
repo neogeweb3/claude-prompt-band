@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { autoPlan } from '../hooks/plan.mjs'
 import { CARD, FRAME, SCALE, ago, cropSvg, rowOf, rowSpans, rowSvg, stepsSvg, textW } from '../hooks/row.mjs'
 
 const BAND = {
@@ -262,6 +263,13 @@ test('on by default: the system prompt asks Claude to plan multi-step work, once
   // nothing added where the tool is not offered
   const c = await $.prompt.compose({ ...input, tools: ['Bash'] } as never)
   expect(c.sections.map(s => s.id)).toEqual(['intro'])
+})
+
+test('the plan prompt asks for step titles short enough for one line of the card', () => {
+  expect(autoPlan('t')).toContain('within 15 Chinese characters')
+  // 15 of them, with a time of 12m 34s, fit one line uncut
+  const card = stepsSvg([{ status: 'done', title: '字'.repeat(15), tail: '12m 34s' }])
+  expect(card.svg).toContain('字'.repeat(15) + '<')
 })
 
 test('a plan without /goal shows under the name Claude gave; a new name starts a new plan', async ($, on) => {

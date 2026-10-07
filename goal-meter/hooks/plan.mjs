@@ -285,6 +285,7 @@ export function autoPlan(tool) {
     `When a request needs several steps of work (roughly three or more steps that use tools), call ${tool} ` +
     `before your first other tool call, with action "plan", "goal" (a few words naming the whole task, in the user's language) and the steps in order, ` +
     `each with a short title in the user's language and a size S, M or L. ` +
+    `Keep every step title within 15 Chinese characters (or 30 Latin letters), one thing per step: the card that lists them cannot grow wider and cuts longer titles. ` +
     `This includes picking up earlier work: "continue", resuming from a handoff, or fixing what the user just reported. ` +
     `The first step starts by itself. Call "done" with a step's id the moment it is finished, one step at a time, each as it happens, never several at the end: ` +
     `the next step then starts by itself. Call "start" only to take up a step out of order. "add" new steps you discover, ` +
