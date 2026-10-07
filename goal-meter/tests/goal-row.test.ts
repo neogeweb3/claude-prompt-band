@@ -356,7 +356,7 @@ test('the row is drawn at usage-band\'s size; the card in the same type, one wid
   expect(card.svg).toContain(`x="${CARD.pad}"`)
 })
 
-test('a finished step shows its time; one never started (marked done with others) shows none', async ($, on) => {
+test('a finished step shows its time; one never started (marked done with others) shows a dash, never 0s', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))
   const clock = mock.clock(on)
@@ -371,7 +371,7 @@ test('a finished step shows its time; one never started (marked done with others
   const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
   await ui.unmount()
   const tails = [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])
-  expect(tails).toEqual(['3m 00s', '10s'])
+  expect(tails).toEqual(['3m 00s', '10s', '—'])
 })
 
 test('a step worked on without being marked started still shows its clock, by the second', async ($, on) => {
@@ -466,7 +466,7 @@ test('a plan marked only with "done" times every step; a "done" for a step never
   const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
   const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
   await ui.unmount()
-  expect([...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])).toEqual(['42s', '1m 05s', '9s'])
+  expect([...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])).toEqual(['42s', '1m 05s', '9s', '—'])
 })
 
 test('with no plan, hovering lists the turn\'s latest operations with their times', async ($, on) => {

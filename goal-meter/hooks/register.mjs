@@ -573,8 +573,9 @@ function footerLabel() {
 }
 
 function taskTail(t) {
-  // a finished step shows its time, to the second (42s, 3m 05s, 1h 02m); one never started, none
-  if (t.status === 'done') return t.untimed ? '' : duration(t.doneAt - t.startedAt)
+  // a finished step shows its time, to the second (42s, 3m 05s, 1h 02m); one never started, a dash
+  // never started, so its time is not known: a dash, not a made-up 0s
+  if (t.status === 'done') return t.untimed ? '—' : duration(t.doneAt - t.startedAt)
   // the running step shows its clock alone: the ▶ already says it is under way
   // (stopped where the work stopped, when nothing runs any more)
   const at = busy(G) ? now : (G && G.lastTurnEnd) || now
