@@ -16,7 +16,7 @@
 
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rowOf, rowSvg, rowSpans, describe, stepsSvg } from './row.mjs'
+import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, FRAME } from './row.mjs'
 import { newGoal, applyAction, progress, eta, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
@@ -634,26 +634,28 @@ function drawRow(el, e) {
   // right above it, as if the row grew upward: absolutely placed, so nothing moves (the surface
   // does it, no hook runs), and gone when the pointer leaves
   if (desk) {
-    const { svg, width: w, height } = rowSvg(r)
-    const kids = [el.Svg({ source: svg, alt: describe(r), width: w, height })]
-    if (steps.length) {
-      // The desktop pins an absolute Box to its parent's left edge whatever the alignment (it sat
-      // flush with the row's left edge in every screenshot), so the card gets a parent of exactly
-      // its frame's width: an invisible strip that stays in the flow, which the column's
-      // alignItems does centre. The card hangs off the strip's left edge, so its middle is the
-      // row's middle, however wide the row or the card.
-      const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
-      const frameW = card.width + FRAME_PAD * 2
-      kids.push(el.Box({
-        // no key: a keyed Box would make this 1px strip the hover scope instead of the row
-        flexDirection: 'column',
-        children: [
-          el.Svg({ source: spacerSvg(frameW), alt: '', width: frameW, height: 1 }),
-          el.Box({ position: 'absolute', bottom: 1, left: 0, display: 'none', hover: { display: 'flex' }, children: [el.Svg({ source: card.svg, alt: steps.map((t) => t.title).join(', '), width: card.width, height: card.height })] }),
-        ],
-      }))
+    const row = rowSvg(r)
+    const alt = describe(r)
+    const centred = (kids) => el.Box({ flexDirection: 'row', justifyContent: 'center', paddingX: 1, children: kids })
+    if (!steps.length) return centred([el.Svg({ source: row.svg, alt, width: row.width, height: row.height })])
+    // The desktop lifts the card out into a popover and sets its left edge on the left edge of the
+    // keyed Box it hangs under, whatever the alignment or offsets (renderer source, 2026-10-07);
+    // the frame is always FRAME.w wide. So the keyed Box is exactly FRAME.w wide, centred: the
+    // row is drawn into it, padded with blank room when narrower, and when wider the parts that
+    // stick out are drawn as two more pieces of the same image on either side, outside the hover.
+    const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
+    const pop = el.Box({ position: 'absolute', bottom: 1, left: 0, display: 'none', hover: { display: 'flex' }, children: [el.Svg({ source: card.svg, alt: steps.map((t) => t.title).join(', '), width: card.width, height: card.height })] })
+    const span = Math.max(row.width, FRAME.w)
+    const pad = (span - row.width) / 2
+    const side = Math.floor((span - FRAME.w) / 2)
+    // every Svg needs a non-blank alt, or the desktop drops it (why 1.8.1's spacer never showed)
+    const piece = (x, w, a) => el.Svg({ source: cropSvg(row, x - pad, w), alt: a, width: w, height: row.height })
+    const kids = [el.Box({ key: 'goal-row', children: [piece(side, FRAME.w, alt), pop] })]
+    if (side > 0) {
+      kids.unshift(piece(0, side, '…'))
+      kids.push(piece(side + FRAME.w, span - side - FRAME.w, '…'))
     }
-    return el.Box({ flexDirection: 'row', justifyContent: 'center', paddingX: 1, children: [el.Box({ key: 'goal-row', flexDirection: 'column', alignItems: 'center', children: kids })] })
+    return centred(kids)
   }
   const spans = rowSpans(r, width)
   const row = el.Box({ flexDirection: 'row', paddingX: 1, children: spans.map((sp, i) => el.Text({ key: 's' + i, color: sp.color, dimColor: sp.dim, wrap: 'truncate-end', children: [sp.text] })) })
@@ -665,10 +667,6 @@ function drawRow(el, e) {
 
 const STEP_HUE = { done: '#72cf9f' }
 
-// The padding the desktop draws round the hover card, each side: its frame measured 430px wide
-// round a 380px card (2026-10-07 screenshot)
-const FRAME_PAD = 25
-const spacerSvg = (w) => `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="1" viewBox="0 0 ${w} 1"></svg>`
 
 function stepRow(el, t, width) {
   const { Box, Text } = el

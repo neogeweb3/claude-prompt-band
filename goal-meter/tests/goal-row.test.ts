@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { CARD, SCALE, ago, rowOf, rowSpans, rowSvg, stepsSvg, textW } from '../hooks/row.mjs'
+import { CARD, FRAME, SCALE, ago, cropSvg, rowOf, rowSpans, rowSvg, stepsSvg, textW } from '../hooks/row.mjs'
 
 const BAND = {
   component: 'AbovePrompt',
@@ -169,24 +169,64 @@ test('collapsed to one row; the steps float in a hover card that moves nothing, 
       expect(hidden).toContain('"justifyContent":"center"')
       expect(await ui.find({ type: 'Text', text: '读代码' })).toBeDefined()
     } else {
-      // the card keeps within the desktop's frame (never scaled down) and is centred by the
-      // column's alignItems, not pinned to the row's left edge
+      // The desktop lifts the card into a popover whose left edge is the keyed Box's left edge
+      // and whose frame is always FRAME.w wide (renderer source, 2026-10-07). So the keyed Box
+      // holds the row drawn exactly FRAME.w wide, centred in the band, and the card fills the
+      // frame unscaled. A short row is padded with blank room inside that one image.
       const imgs = await ui.findAll({ type: 'Svg' })
-      // the row, the invisible strip the card hangs from, the card
-      expect(imgs).toHaveLength(3)
-      expect(imgs.at(-1)!.props.width).toBeLessThanOrEqual(CARD.max)
-      expect(String(imgs.at(-1)!.props.source)).toContain('改样式')
-      // centred by the flow, not by the absolute Box (the desktop pins that to its parent's left):
-      // the card's parent is a strip exactly as wide as the card's frame, centred in the column
-      expect(hidden).toContain('"alignItems":"center"')
-      expect(imgs[1]!.props.width).toBe((imgs.at(-1)!.props.width as number) + 50)
-      expect(imgs[1]!.props.height).toBe(1)
-      expect(hidden).toContain('"left":0')
+      expect(imgs).toHaveLength(2) // the row, the card
+      expect(imgs[0]!.props.width).toBe(FRAME.w)
+      expect(String(imgs[0]!.props.source)).toMatch(/viewBox="-[\d.]+ 0 360 30"/)
+      expect(imgs[1]!.props.width).toBe(FRAME.w - FRAME.pad * 2)
+      expect(String(imgs[1]!.props.source)).toContain('改样式')
       expect(hidden).not.toContain('goal-card-anchor')
     }
     expect(await ui.find({ type: 'Text', text: /^S\b|^L\b/ })).toBeUndefined()
     await ui.unmount()
   }
+})
+
+test('on the desktop the card sits centred over a row of any width, and every image has an alt', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  mock.clock(on)
+  // 1.8.1's centring strip had alt '' and the desktop dropped it: an alt must hold a non-blank
+  const alts = (imgs: { props: Record<string, unknown> }[]) => imgs.every((i) => String(i.props.alt).trim() !== '')
+  for (const title of ['短', '一个很长很长的任务名字，长到整行远比卡片的外框还要宽出一大截']) {
+    await $.tool.call({ tool: 'mcp__goal-meter__tasks', action: 'plan', goal: title, tasks: [{ title: '读代码' }, { title: '改样式' }] })
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const imgs = await ui.findAll({ type: 'Svg' })
+    expect(alts(imgs)).toBe(true)
+    const scope = await ui.find({ type: 'Box', key: 'goal-row' })
+    const inScope = JSON.stringify(scope)
+    // the hover's own image is FRAME.w wide whatever the row; the card fills the frame
+    const anchor = imgs.find((i) => i.props.width === FRAME.w)!
+    expect(inScope).toContain(JSON.stringify(anchor.props.source))
+    const pieces = imgs.filter((i) => !String(i.props.source).includes('改样式'))
+    const total = pieces.reduce((a, i) => a + (i.props.width as number), 0)
+    if (title === '短') {
+      expect(pieces).toHaveLength(1)
+    } else {
+      // a wide row: the parts beyond the frame are two more pieces, left and right, outside the
+      // hover, together exactly the row; the frame's middle is the row's middle within half a px
+      expect(pieces).toHaveLength(3)
+      expect(pieces[1]).toBe(anchor)
+      expect(total).toBeGreaterThan(FRAME.w)
+      const left = pieces[0]!.props.width as number
+      expect(Math.abs(left + FRAME.w / 2 - total / 2)).toBeLessThanOrEqual(0.5)
+      expect(inScope).not.toContain(JSON.stringify(pieces[0]!.props.source))
+    }
+    await ui.unmount()
+  }
+})
+
+test('a crop is a window onto the same drawing', () => {
+  const row = rowSvg(rowOf(goal(), prog, 0)!)
+  const piece = cropSvg(row, 10, 50)
+  expect(piece).toContain('width="50"')
+  expect(piece).toContain('viewBox="10 0 50 30"')
+  // the drawing itself is untouched
+  expect(piece.slice(piece.indexOf('>'))).toBe(row.svg.slice(row.svg.indexOf('>')))
 })
 
 test('Latin text is measured narrow enough not to be stretched apart', async () => {

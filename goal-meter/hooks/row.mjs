@@ -171,6 +171,12 @@ export function rowSvg(r) {
   return { svg, width, height, base }
 }
 
+// A window `w` px wide onto a drawn row, starting `x` px in (negative: blank room to its left)
+export function cropSvg(row, x, w) {
+  const k = row.base / row.width
+  return row.svg.replace(/^<svg([^>]*?) width="[^"]*"([^>]*?) viewBox="[^"]*"/, `<svg$1 width="${w}"$2 viewBox="${x * k} 0 ${w * k} ${D.h}"`)
+}
+
 // ---- terminal: one row of spans in usage-band's style
 
 export function rowSpans(r, columns = 100) {
@@ -192,16 +198,17 @@ export function rowSpans(r, columns = 100) {
   return spans
 }
 
-// ---- desktop: the steps card, one SVG exactly as wide as the row it floats over, so its middle
-// is always the row's middle (the row is centred in the band) and it never shifts sideways
+// ---- desktop: the steps card, one SVG that fills the desktop's hover frame
 
-// The desktop draws the card in a frame of its own: about 24px of padding round the image and no
-// wider than about 431px, an image wider than the room left scaled down to fit (three screenshots,
-// 2026-10-06). So the card stays within CARD.max and keeps no margin of its own.
+// The desktop lifts the card into a popover frame of its own (renderer source, 2026-10-07):
+// `max-width: min(360px, 100vw - 16px)`, border-box, 12px of padding each side (measured on two
+// screenshots), the image inside held to `max-width: 100%`. So the frame is never wider than 360
+// and an image wider than 336 is scaled down, its type with it (380 read at 88%).
 // The steps read at the row's own 13px, regular weight, the same type as the title,
-// on a card of one fixed width, as wide as the frame takes without scaling it down
+// on a card of one fixed width, the frame's full 360 without scaling it down
+export const FRAME = { w: 360, pad: 12 }
 const STEP = { h: 22, top: 1, size: 13 }
-export const CARD = { min: 380, max: 380, pad: 2 }
+export const CARD = { min: FRAME.w - FRAME.pad * 2, max: FRAME.w - FRAME.pad * 2, pad: 2 }
 const MARK = { done: '✓', active: '▶', pending: '○' }
 
 // Cut text to fit `room` px, by the same measure the row uses
