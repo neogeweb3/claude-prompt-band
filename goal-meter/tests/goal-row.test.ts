@@ -381,6 +381,52 @@ test('a step worked on without being marked started still shows its clock, by th
   expect(t).toHaveLength(2) // 甲's time and 丙's clock: 乙 is no longer the step being worked on
 })
 
+test('when the turn ends and nothing runs in the background, the clocks stop and no time is left', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const view = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const imgs = await ui.findAll({ type: 'Svg' })
+    await ui.unmount()
+    const card = String(imgs.at(-1)!.props.source)
+    return { row: imgs.map((i) => String(i.props.alt)).join(' '), tails: [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1]) }
+  }
+  const stop = (bg: number) => $.classic.Stop({ stop_hook_active: false, background_tasks: Array.from({ length: bg }, (_, i) => ({ id: 'b' + i, type: 'shell', status: 'running', description: 'x' })) } as never)
+  await clock.advance(60000)
+  await $.turn.start({ text: '做', turnId: 't1' })
+  await tasks('plan', { goal: '收尾', tasks: [{ title: '甲' }, { title: '乙' }, { title: '丙' }, { title: '丁' }] })
+  for (const id of [1, 2]) { await clock.advance(10000); await tasks('done', { id }) }
+  await clock.advance(5000)
+  // a background task is still carrying 丙 when the turn stops: its clock and the estimate go on
+  await stop(1)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  await clock.advance(33000)
+  let v = await view()
+  expect(v.tails).toEqual(['10s', '10s', '38s'])
+  expect(v.row).toContain('剩约')
+  // the background task woke a turn that ended with nothing left running: the work waits on the person
+  await $.turn.start({ text: '', turnId: 't2' })
+  await stop(0)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
+  await clock.advance(60000)
+  v = await view()
+  expect(v.tails).toEqual(['10s', '10s'])
+  expect(v.row).not.toContain('剩约')
+  // a step marked under way stops where the work stopped, not counting on
+  await $.turn.start({ text: '继续', turnId: 't3' })
+  await tasks('start', { id: 3 })
+  await clock.advance(7000)
+  await stop(0)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't3' })
+  await clock.advance(120000)
+  expect((await view()).tails).toEqual(['10s', '10s', '7s'])
+})
+
 test('with no plan, hovering lists the turn\'s latest operations with their times', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))

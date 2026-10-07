@@ -41,6 +41,7 @@ let hidden = false
 let nudged = false
 let callsWithoutPlan = 0
 let working = false // a main turn is running
+let background = 0 // background tasks still in flight when the last turn stopped
 let turnCalls = 0 // its tool calls so far, the mod's own left out
 let turnNudged = false
 let ops = [] // this turn's tool calls, newest last: the hover card's details while there is no plan
@@ -281,7 +282,7 @@ export function register(on) {
     $.clock.every(10000, () => readRecording($).catch(() => {}))
     // a step's clock counts by the second, as the background-task panel's does
     $.clock.every(1000, async () => {
-      if (!G || G.status !== 'running') return
+      if (!busy(G)) return
       now = await $.clock.now()
       $.ui.invalidate('ui.render')
     })
@@ -358,6 +359,9 @@ export function register(on) {
   // The settings hooks' events carry the log's real path
   on('classic.Stop', async ($, e, next) => {
     if (e && typeof e.transcript_path === 'string' && e.transcript_path) transcriptPath = e.transcript_path
+    // a turn that stops with shells or agents still running in the background is not done: the
+    // step being worked on keeps its clock until they wake the next turn
+    background = e && Array.isArray(e.background_tasks) ? e.background_tasks.length : 0
     return next(e)
   })
 
@@ -526,6 +530,12 @@ function paused(g) {
   return g.status === 'running' && !g.active && g.lastTurnEnd > 0
 }
 
+// Something is still at work on the plan: a turn, or background tasks the last turn left running.
+// Otherwise the clocks stand still and no time is left to estimate: the work waits on the person.
+function busy(g) {
+  return !!g && g.status === 'running' && (g.active || working || background > 0)
+}
+
 function headline(g, p) {
   if (g.status === 'met') return `done ✓ in ${minutes((g.endedAt || now) - g.startedAt)}`
   if (g.status !== 'running') return 'stopped'
@@ -575,10 +585,12 @@ function taskTail(t) {
   // every finished step shows its time, to the second: 42s, 3m 05s, 1h 02m
   if (t.status === 'done') return duration(t.doneAt - t.startedAt)
   // the running step shows its clock alone: the ▶ already says it is under way
-  if (t.status === 'active') return (t.by ? t.by + ' · ' : '') + duration(now - t.startedAt)
+  // (stopped where the work stopped, when nothing runs any more)
+  const at = busy(G) ? now : (G && G.lastTurnEnd) || now
+  if (t.status === 'active') return (t.by ? t.by + ' · ' : '') + duration(Math.max(0, at - t.startedAt))
   // a step worked on without being marked started counts from when the step before it finished,
-  // the same start a step marked done without a start gets
-  if (t.status === 'pending' && t === impliedStep(G)) return duration(now - (lastFinish(G) || G.startedAt))
+  // the same start a step marked done without a start gets; only while work is going on
+  if (t.status === 'pending' && busy(G) && t === impliedStep(G)) return duration(now - (lastFinish(G) || G.startedAt))
   if (t.status === 'dropped') return '已放弃' + (t.note ? '：' + t.note : '')
   return ''
 }
@@ -636,7 +648,7 @@ function taskRow(el, t, width) {
 
 function drawRow(el, e) {
   const p = G ? progress(G) : null
-  const t = G && G.status === 'running' ? eta(G, now) : null
+  const t = busy(G) ? eta(G, now) : null
   const work = working && !(G && G.status === 'running') ? { calls: turnCalls } : null
   const celebrate = !!G && G.status === 'met' && now - (G.endedAt || 0) < CELEBRATE_MS
   const r = rowOf(G ? { ...G, title: mask(G.title), celebrate } : null, p, t ? t.ms : 0, work, lastTurn, now)

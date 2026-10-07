@@ -269,6 +269,8 @@ export function autoPlan(tool) {
     `This includes picking up earlier work: "continue", resuming from a handoff, or fixing what the user just reported. ` +
     `Then call "start" with a step's id when you begin it and "done" when it is finished, one step at a time, each as it happens; "add" new steps you discover, ` +
     `"drop" ones no longer needed. A new, unrelated request gets a new "plan". ` +
+    `List only steps you do yourself, never one that waits on the user (their reply, a screenshot, a check on their side). ` +
+    `Before you end your turn, every step is done or dropped, unless background work you started is still carrying it. ` +
     `Skip all of this for quick answers, single lookups and one-step edits.`
   )
 }
