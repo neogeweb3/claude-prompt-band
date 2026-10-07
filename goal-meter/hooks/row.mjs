@@ -65,7 +65,8 @@ export function rowOf(g, p, etaMs, work = null, last = null, nowMs = 0) {
     title,
     fraction: p.fraction,
     figure: `${p.doneN}/${p.n} · ${p.pct}%`,
-    detail: etaMs ? `剩约 ${minutes(etaMs)}` : '',
+    // no time left to estimate, but tasks of the plan still running in the background: say so
+    detail: etaMs ? `剩约 ${minutes(etaMs)}` : g.background ? `后台 ${g.background} 个任务在跑` : '',
   }
 }
 

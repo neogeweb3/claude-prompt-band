@@ -452,8 +452,10 @@ export function register(on) {
       if (e.isAborted) G.interrupted = true
       const p = progress(G)
       // the turn ended with every task done: finished (the goal check's own
-      // verdict, read from the log, usually closed it a moment earlier)
-      if (e.reason === 'answer' && !e.isAborted && p.n > 0 && p.doneN === p.n) await finishGoal($, 'tasks')
+      // verdict, read from the log, usually closed it a moment earlier). Not while work the
+      // turn started still runs in the background (classic.Stop, which comes just before this,
+      // counted it): the turn that work wakes when it ends closes the plan instead
+      if (e.reason === 'answer' && !e.isAborted && p.n > 0 && p.doneN === p.n && background === 0) await finishGoal($, 'tasks')
       else await save($)
       $.ui.invalidate('ui.render')
     }
@@ -640,7 +642,7 @@ function drawRow(el, e) {
   const t = busy(G) ? eta(G, now) : null
   const work = working && !(G && G.status === 'running') ? { calls: turnCalls } : null
   const celebrate = !!G && G.status === 'met' && now - (G.endedAt || 0) < CELEBRATE_MS
-  const r = rowOf(G ? { ...G, title: mask(G.title), celebrate } : null, p, t ? t.ms : 0, work, lastTurn, now)
+  const r = rowOf(G ? { ...G, title: mask(G.title), celebrate, background: G.status === 'running' && !working ? background : 0 } : null, p, t ? t.ms : 0, work, lastTurn, now)
   if (!r) return null // a chat that has done nothing yet: no row at all
   const desk = e.surface === 'desktop' || e.surface === 'mobile'
   const width = Math.max(40, (e.props && e.props.bodyColumns) || 100)

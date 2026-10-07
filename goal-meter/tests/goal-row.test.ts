@@ -483,6 +483,44 @@ test('a plan marked only with "done" times every step; a "done" for a step never
   expect([...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])).toEqual(['42s', '1m 05s', '9s', '—'])
 })
 
+test('every step done but a background task still running: not finished until it ends', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const row = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+    await ui.unmount()
+    return alt
+  }
+  // what the neo-mate chat did (2026-10-07 11:57): launch the Codex build in the background,
+  // mark the last step done, end the turn
+  const stop = (bg: number) => $.classic.Stop({ stop_hook_active: false, background_tasks: Array.from({ length: bg }, (_, i) => ({ id: 'b' + i, type: 'shell', status: 'running', description: 'Codex stage 3' })) } as never)
+  await clock.advance(60000)
+  await $.turn.start({ text: '派给 Codex', turnId: 't1' })
+  await tasks('plan', { goal: '事项合并派给 Codex', tasks: [{ title: '写目标书' }, { title: '发车 stage 3' }] })
+  await clock.advance(30000)
+  await tasks('done', { id: 1 })
+  await tasks('done', { id: 2 })
+  await stop(1)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  let r = await row()
+  expect(r).not.toContain('完成')
+  expect(r).toContain('后台 1 个任务在跑')
+  // the build ends and wakes a turn; nothing left in the background: now it is finished
+  await clock.advance(600000)
+  await $.turn.start({ text: '', turnId: 't2' })
+  await stop(0)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
+  r = await row()
+  expect(r).toContain('完成')
+  expect(r).not.toContain('后台')
+})
+
 test('with no plan, hovering lists the turn\'s latest operations with their times', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))
