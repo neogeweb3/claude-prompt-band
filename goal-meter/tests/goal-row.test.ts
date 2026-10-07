@@ -222,6 +222,17 @@ test('on the desktop the card sits centred over a row of any width, and every im
   }
 })
 
+test('a long step name stops well short of its time', () => {
+  const long = '读现有费率模型、资金账算法和记分牌复现路径并核对每一处口径'
+  const card = stepsSvg([{ status: 'active', title: long, tail: '1m 00s' }])
+  const title = card.svg.match(new RegExp(`x="${CARD.pad + 18}"[^>]*>([^<]*)<`))![1]!
+  expect(title.endsWith('…')).toBe(true)
+  // the name's right end and the time's left end are at least 28px apart
+  const nameEnd = CARD.pad + 18 + textW(title, 13)
+  const timeStart = CARD.max - CARD.pad - textW('1m 00s', 13)
+  expect(timeStart - nameEnd).toBeGreaterThanOrEqual(28)
+})
+
 test('a crop is a window onto the same drawing', () => {
   const row = rowSvg(rowOf(goal(), prog, 0)!)
   const piece = cropSvg(row, 10, 50)

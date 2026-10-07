@@ -207,7 +207,7 @@ export function rowSpans(r, columns = 100) {
 // The steps read at the row's own 13px, regular weight, the same type as the title,
 // on a card of one fixed width, the frame's full 360 without scaling it down
 export const FRAME = { w: 360, pad: 12 }
-const STEP = { h: 22, top: 1, size: 13 }
+const STEP = { h: 22, top: 1, size: 13, gap: 28 }
 export const CARD = { min: FRAME.w - FRAME.pad * 2, max: FRAME.w - FRAME.pad * 2, pad: 2 }
 const MARK = { done: '✓', active: '▶', pending: '○' }
 
@@ -220,7 +220,8 @@ export const fit = (v, room, size) => {
 }
 
 export function stepsSvg(steps) {
-  const tails = steps.map((t) => (t.tail ? textW(t.tail, STEP.size) + 12 : 0))
+  // a clear column of space between a step's name and its time, never the name running into it
+  const tails = steps.map((t) => (t.tail ? textW(t.tail, STEP.size) + STEP.gap : 0))
   const want = Math.max(...steps.map((t, i) => 18 + textW(t.title, STEP.size) + tails[i]), 0) + CARD.pad * 2
   const width = Math.round(Math.min(CARD.max, Math.max(CARD.min, want)))
   const h = STEP.top * 2 + steps.length * STEP.h - 4
