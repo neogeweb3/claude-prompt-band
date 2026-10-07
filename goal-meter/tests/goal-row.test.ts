@@ -172,11 +172,17 @@ test('collapsed to one row; the steps float in a hover card that moves nothing, 
       // the card keeps within the desktop's frame (never scaled down) and is centred by the
       // column's alignItems, not pinned to the row's left edge
       const imgs = await ui.findAll({ type: 'Svg' })
-      expect(imgs).toHaveLength(2)
-      expect(imgs[1]!.props.width).toBeLessThanOrEqual(CARD.max)
-      expect(String(imgs[1]!.props.source)).toContain('改样式')
+      // the row, the invisible strip the card hangs from, the card
+      expect(imgs).toHaveLength(3)
+      expect(imgs.at(-1)!.props.width).toBeLessThanOrEqual(CARD.max)
+      expect(String(imgs.at(-1)!.props.source)).toContain('改样式')
+      // centred by the flow, not by the absolute Box (the desktop pins that to its parent's left):
+      // the card's parent is a strip exactly as wide as the card's frame, centred in the column
       expect(hidden).toContain('"alignItems":"center"')
-      expect(hidden).not.toContain('"left":0')
+      expect(imgs[1]!.props.width).toBe((imgs.at(-1)!.props.width as number) + 50)
+      expect(imgs[1]!.props.height).toBe(1)
+      expect(hidden).toContain('"left":0')
+      expect(hidden).not.toContain('goal-card-anchor')
     }
     expect(await ui.find({ type: 'Text', text: /^S\b|^L\b/ })).toBeUndefined()
     await ui.unmount()
@@ -235,7 +241,7 @@ test('the row leaves the step name out (room for the title); the card names it',
   await ui.unmount()
   expect(String(imgs[0]!.props.source)).toContain('美化进度行')
   expect(String(imgs[0]!.props.source)).not.toContain('显示当前步骤')
-  expect(String(imgs[1]!.props.source)).toContain('显示当前步骤')
+  expect(String(imgs.at(-1)!.props.source)).toContain('显示当前步骤')
 })
 
 test('a plan just finished: a full green bar a shine runs over twice; later, the bar alone', async () => {
@@ -301,7 +307,7 @@ test('every finished step shows a time, even one marked done without a start', a
   await clock.advance(10000)
   await tasks('done', { ids: [2, 3] }) // a batch: the second had no time of its own
   const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
-  const card = String((await ui.findAll({ type: 'Svg' }))[1]!.props.source)
+  const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
   await ui.unmount()
   const tails = [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])
   expect(tails).toEqual(['3m00s', '10s', '0s'])
@@ -316,7 +322,7 @@ test('with no plan, hovering lists the turn\'s latest operations with their time
   const card = async (surface: 'desktop' | 'terminal') => {
     const ui = await $.ui.mount({ plugin: 'goal-meter', surface, ...BAND })
     const out = surface === 'desktop'
-      ? String((await ui.findAll({ type: 'Svg' }))[1]?.props.source ?? '')
+      ? String((await ui.findAll({ type: 'Svg' })).at(-1)?.props.source ?? '')
       : JSON.stringify(await ui.find({ type: 'Box', key: 'goal-row' }) ?? null)
     await ui.unmount()
     return out
