@@ -1,0 +1,10 @@
+{
+  "name": "goal-meter",
+  "version": "1.8.0",
+  "description": "Always-on goal row above the prompt, drawn like usage-band: title, progress bar, done of total and ETA; hover it to see every step. /goals opens the full pane.",
+  "author": {
+    "name": "Nate Herk"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/neogeweb3/claude-prompt-band"
+}
