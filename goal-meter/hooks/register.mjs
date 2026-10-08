@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, eta, askDue, markAsked, minutesHint, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -193,8 +193,16 @@ async function serveTool($, e) {
     hidden = false
   }
   const by = e.by ? String(e.by) : e.agentId ? agentNames.get(e.agentId) || 'agent' : ''
+  const open = new Set(G.tasks.filter((t) => t.status !== 'done').map((t) => t.id))
   const r = applyAction(G, e, { now, by })
   let text = r.text
+  // every step this call finished goes into the estimate ledger
+  const finished = r.ok ? G.tasks.filter((t) => t.status === 'done' && open.has(t.id)) : []
+  if (finished.length) {
+    let model = ''
+    try { model = await $.session.model() } catch {}
+    await appendLines($, 'ledger.jsonl', finished.map((t) => ledgerLine(t, { now, session: sessionId, model })), 5000)
+  }
   // a plan without minutes, once in a chat: ask for them in the reply
   if (r.ok && (action === 'plan' || action === 'add') && !G.minutesAsked && normalizeTasks(e.tasks).some((t) => !t.minutes)) {
     G.minutesAsked = true
@@ -605,15 +613,22 @@ async function idleAsk($) {
 }
 
 async function logAsk($, entry) {
+  await appendLines($, 'asks.jsonl', [entry], 300)
+}
+
+// Adds lines to a .jsonl file in the mod's data folder, keeping the last `keep` (the plan list reads
+// .json files only, so these are never taken for plans). 5000 ledger lines are about 1 MB, well
+// under the 4 MB a read takes.
+async function appendLines($, name, entries, keep) {
   if (!home) return
-  const path = `${home}${DIR}/asks.jsonl` // .jsonl: the plan list reads .json files only
+  const path = `${home}${DIR}/${name}`
   try {
     let old = ''
     try { old = await $.fs.read(path) } catch {}
-    const lines = old.split('\n').filter(Boolean).slice(-299)
-    await $.fs.write(path, [...lines, JSON.stringify(entry)].join('\n') + '\n')
+    const lines = old.split('\n').filter(Boolean)
+    await $.fs.write(path, [...lines, ...entries.map((x) => JSON.stringify(x))].slice(-keep).join('\n') + '\n')
   } catch {
-    // the log is for looking back; the ask itself already counted
+    // a log is for looking back; the work it records already happened
   }
 }
 

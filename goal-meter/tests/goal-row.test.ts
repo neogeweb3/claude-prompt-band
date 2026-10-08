@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { autoPlan } from '../hooks/plan.mjs'
+import { applyAction, autoPlan, ledgerLine, newGoal } from '../hooks/plan.mjs'
 import { CARD, FRAME, SCALE, ago, cropSvg, rowOf, rowSpans, rowSvg, stepsSvg, textW } from '../hooks/row.mjs'
 
 const BAND = {
@@ -824,6 +824,20 @@ test('a plan that gives minutes is never asked for them', async ($, on) => {
   mock.clock(on)
   const r = (await $.tool.call({ tool: 'mcp__goal-meter__tasks', action: 'plan', goal: '装机', tasks: [{ title: '构建', size: 'M', minutes: 8 }] } as never)) as { result?: string }
   expect(String(r.result)).not.toContain('no "minutes"')
+})
+
+test('the estimate ledger keeps what Claude first said, its later word, and what the step took', () => {
+  const T0 = Date.parse('2026-10-08T14:00:00Z') // a real time: a start at 0 reads as not started
+  const g = newGoal({ sessionId: 's', condition: '装机', now: T0 })
+  const act = (input: object, now: number) => applyAction(g, input, { now: T0 + now })
+  act({ action: 'plan', goal: '装机', tasks: [{ title: '门禁', size: 'L', minutes: 60 }, { title: '装', size: 'S', minutes: 3 }, { title: '报', size: 'S' }] }, 0)
+  act({ action: 'start', id: 1, minutes: 90 }, 60000) // new word a minute in: 91 in all
+  act({ action: 'done', id: 1 }, 40 * 60000)
+  act({ action: 'done', ids: [2, 3] }, 41 * 60000) // 报 never started
+  const [a, b, c] = g.tasks.map((t) => ledgerLine(t, { now: T0 + 41 * 60000, session: 's', model: 'claude-opus-5-5' }))
+  expect([a.said, a.final, a.tookMin, a.reestimated, a.model]).toEqual([60, 91, 40, true, 'claude-opus-5-5'])
+  expect([b.said, b.tookMin, b.untimed]).toEqual([3, 1, false])
+  expect([c.said, c.tookMin, c.untimed]).toEqual([0, null, true])
 })
 
 test('every step done but a background task still running: not finished until it ends', async ($, on) => {

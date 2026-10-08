@@ -46,7 +46,7 @@ claude plugin update usage-band@claude-prompt-band
 
 ## 会存什么、存在哪
 
-不往外发任何数据。goal-meter 把每个对话的计划存在 `~/.claude/mods-data/goal-meter/<对话>.json`（`/goals` 用它列出所有对话的计划）。usage-band 通过 `~/.claude/usage-band-shared.json` 在开着的对话之间共享最新额度，这样闲着的对话也能显示准确的额度。usage-band 不会自己调用模型。goal-meter 会在系统提示里加一小段，让 Claude 遇到多步任务时列出步骤；Claude 空闲、在等后台任务时，它可能问一个对话分身某一步还要多久（走你自己的账号和用量，每次连同花的 token 记在 `~/.claude/mods-data/goal-meter/asks.jsonl`；`/goals ask off` 关掉）。
+不往外发任何数据。goal-meter 把每个对话的计划存在 `~/.claude/mods-data/goal-meter/<对话>.json`（`/goals` 用它列出所有对话的计划）。usage-band 通过 `~/.claude/usage-band-shared.json` 在开着的对话之间共享最新额度，这样闲着的对话也能显示准确的额度。usage-band 不会自己调用模型。goal-meter 会在系统提示里加一小段，让 Claude 遇到多步任务时列出步骤；Claude 空闲、在等后台任务时，它可能问一个对话分身某一步还要多久（走你自己的账号和用量，每次连同花的 token 记在 `~/.claude/mods-data/goal-meter/asks.jsonl`；`/goals ask off` 关掉）。每做完一步，还会往 `~/.claude/mods-data/goal-meter/ledger.jsonl` 记一行（Claude 报的分钟数、实际用时、模型），只留最近 5000 行，用来看 Claude 估得准不准。
 
 ## 致谢
 

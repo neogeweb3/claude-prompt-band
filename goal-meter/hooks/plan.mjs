@@ -217,7 +217,7 @@ function idsOf(input) {
 
 function addTasks(goal, list, now, origin) {
   for (const t of list) {
-    goal.tasks.push({ id: goal.nextId++, title: t.title, size: t.size, minutes: t.minutes || 0, status: 'pending', by: '', addedAt: now, startedAt: 0, doneAt: 0, origin, note: '' })
+    goal.tasks.push({ id: goal.nextId++, title: t.title, size: t.size, minutes: t.minutes || 0, said: t.minutes || 0, status: 'pending', by: '', addedAt: now, startedAt: 0, doneAt: 0, origin, note: '' })
   }
 }
 
@@ -469,4 +469,24 @@ export function minutesHint(tool, active) {
     `\nThese steps have no "minutes", and the time left on the progress row comes from them: ${now}give every step "minutes", how long you expect it to take, in later plans. ` +
     `Do not mention this in your reply.`
   )
+}
+
+// One line of the estimate ledger for a step just finished: what Claude first said, what it came
+// to after any new word, and what the step really took. Kept across chats so that, once there is
+// enough of it, estimates can be corrected by Claude's own record by length of step and by model
+// (evidence-based scheduling keeps such a history per estimator); nothing reads it yet.
+export function ledgerLine(t, { now, session, model }) {
+  return {
+    at: new Date(now).toISOString(),
+    session,
+    model: model || '',
+    said: t.said || 0,
+    final: t.minutes || 0,
+    tookMin: t.untimed ? null : Math.round(((t.doneAt || now) - t.startedAt) / 6000) / 10,
+    untimed: !!t.untimed,
+    reestimated: !!t.estAt,
+    asks: t.asks || 0,
+    size: t.size,
+    title: String(t.title || '').slice(0, 40),
+  }
 }
