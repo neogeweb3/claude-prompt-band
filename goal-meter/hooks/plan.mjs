@@ -459,3 +459,14 @@ export function minutesIn(text) {
   const m = String(text || '').match(/\d+(?:\.\d+)?/)
   return m ? minutesOf(m[0]) : 0
 }
+
+// Said once in a chat, on a plan that came without minutes. A chat keeps the system prompt it began
+// with, through restarts (2026-10-08: a chat in a restarted app still read the old one), so one that
+// began before Claude was asked for minutes only hears of them here, in a tool's reply
+export function minutesHint(tool, active) {
+  const now = active ? `call ${tool} with action "start", id ${active.id} and "minutes", how many more from now, and ` : ''
+  return (
+    `\nThese steps have no "minutes", and the time left on the progress row comes from them: ${now}give every step "minutes", how long you expect it to take, in later plans. ` +
+    `Do not mention this in your reply.`
+  )
+}

@@ -806,6 +806,26 @@ test('an answer is taken as given, so a step is not asked again and again (6 for
   expect(asked.length).toBeLessThanOrEqual(4)
 })
 
+test('a plan without minutes is asked for them once in a chat, in the tool\'s reply', async ($, on) => {
+  on('tool.call', () => ({ result: 'engine' }))
+  mock.clock(on)
+  const tasks = async (action: string, extra = {}) => String(((await $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)) as { result?: string }).result)
+  // a chat begun before Claude was asked for minutes keeps that system prompt: the reply asks
+  const first = await tasks('plan', { goal: '装机', tasks: [{ title: '构建', size: 'M' }, { title: '装', size: 'S' }] })
+  expect(first).toContain('These steps have no "minutes"')
+  expect(first).toContain('action "start", id 1 and "minutes"')
+  // once in a chat: not on its next plan, a new task, either
+  expect(await tasks('plan', { goal: '另一件事', tasks: [{ title: '查', size: 'S' }] })).not.toContain('no "minutes"')
+  expect(await tasks('add', { tasks: [{ title: '再查', size: 'S' }] })).not.toContain('no "minutes"')
+})
+
+test('a plan that gives minutes is never asked for them', async ($, on) => {
+  on('tool.call', () => ({ result: 'engine' }))
+  mock.clock(on)
+  const r = (await $.tool.call({ tool: 'mcp__goal-meter__tasks', action: 'plan', goal: '装机', tasks: [{ title: '构建', size: 'M', minutes: 8 }] } as never)) as { result?: string }
+  expect(String(r.result)).not.toContain('no "minutes"')
+})
+
 test('every step done but a background task still running: not finished until it ends', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))

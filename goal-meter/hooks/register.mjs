@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, eta, askDue, markAsked, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, eta, askDue, markAsked, minutesHint, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -185,17 +185,26 @@ async function serveTool($, e) {
     (action === 'plan' && G.kind === 'plan' && named && titleOf(named) !== G.title)
   if (fresh) {
     if (!first) return { result: `Goal meter: no plan in this chat yet. Call action "plan" with the tasks first, each { "title": "...", "size": "S" | "M" | "L" }.` }
-    // tracked like a /goal, named after the task Claude gave, else its first step
+    // tracked like a /goal, named after the task Claude gave, else its first step; whether the chat
+    // was already asked for minutes carries over
+    const minutesAsked = !!(G && G.minutesAsked)
     G = newGoal({ sessionId, condition: named || first.title, now, cwd, kind: 'plan' })
+    if (minutesAsked) G.minutesAsked = true
     hidden = false
   }
   const by = e.by ? String(e.by) : e.agentId ? agentNames.get(e.agentId) || 'agent' : ''
   const r = applyAction(G, e, { now, by })
+  let text = r.text
+  // a plan without minutes, once in a chat: ask for them in the reply
+  if (r.ok && (action === 'plan' || action === 'add') && !G.minutesAsked && normalizeTasks(e.tasks).some((t) => !t.minutes)) {
+    G.minutesAsked = true
+    text += minutesHint(toolName, G.tasks.find((t) => t.status === 'active' && !t.replaced))
+  }
   if (r.ok) {
     await save($)
     $.ui.invalidate('ui.render')
   }
-  return { result: r.text }
+  return { result: text }
 }
 
 // The goal check's verdict. Its row reaches session.append with no content (the
