@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, eta, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, eta, askDue, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -36,12 +36,15 @@ let cwd = ''
 let now = 0
 let toolName = 'mcp__goal-meter__tasks'
 let commandName = 'goals'
-let settings = { strict: false }
+let settings = { strict: false, ask: true }
 let hidden = false
 let nudged = false
 let callsWithoutPlan = 0
 let working = false // a main turn is running
 let background = 0 // background tasks still in flight when the last turn stopped
+let backgroundWork = [] // what they are, in a few words each
+let forking = false // a fork of the conversation is asking how much longer
+let askClock = false // the clock that checks for an ask while Claude waits; started the first time it does
 let turnCalls = 0 // its tool calls so far, the mod's own left out
 let turnNudged = false
 let ops = [] // this turn's tool calls, newest last: the hover card's details while there is no plan
@@ -362,6 +365,7 @@ export function register(on) {
     // a turn that stops with shells or agents still running in the background is not done: the
     // step being worked on keeps its clock until they wake the next turn
     background = e && Array.isArray(e.background_tasks) ? e.background_tasks.length : 0
+    backgroundWork = background ? e.background_tasks.map((b) => clip(String(b.description || ''), 80)).filter(Boolean).slice(0, 5) : []
     return next(e)
   })
 
@@ -384,6 +388,19 @@ export function register(on) {
           if (!(G && G.status === 'running')) $.ui.invalidate('ui.render')
         }
       }
+    }
+    // time to ask how much longer the running step has (early on a long step, or once late), read
+    // after this call's result and never shown to the person
+    const at = await $.clock.now()
+    const ask = !e.agentId && G && G.status === 'running' ? askDue(G, at) : null
+    if (ask) {
+      const t = ask.task
+      if (ask.late) t.overdueSaid = true
+      else Object.assign(t, { asked: true, checks: (t.checks || 0) + 1 })
+      await save($)
+      const r = await run()
+      if (!r || r.deny || !('result' in r)) return r
+      return { ...r, context: [...(r.context || []), ask.late ? lateNudge(toolName, t) : earlyNudge(toolName, t, at)] }
     }
     // outside /goal: a turn a few tools deep with no plan gets one reminder, read after this
     // call's result and never shown to the person
@@ -440,6 +457,11 @@ export function register(on) {
       working = false
       if (turnCalls > 0) lastTurn = { calls: turnCalls, ms: now - (turnAt || now), at: now }
       $.ui.invalidate('ui.render')
+      // the turn left background work running (classic.Stop, just before this, counted it)
+      if (background && !askClock) {
+        askClock = true
+        $.clock.every(15000, () => idleAsk($).catch(() => {}))
+      }
     }
     if (e.agentId) {
       runningAgents.delete(e.agentId)
@@ -465,6 +487,12 @@ export function register(on) {
   on('command.run', { command: ['goals', 'goal-meter'] }, async ($, e) => {
     now = await $.clock.now()
     const [key, value] = String(e.args || '').trim().toLowerCase().split(/\s+/)
+    if (key === 'ask') {
+      settings.ask = value !== 'off'
+      await $.store.set('settings', settings)
+      $.ui.toast(`Asking how much longer while Claude waits on background work: ${settings.ask ? 'on' : 'off'}`)
+      return {}
+    }
     if (key === 'strict') {
       settings.strict = value !== 'off'
       await $.store.set('settings', settings)
@@ -530,6 +558,56 @@ function label(g) {
 
 function paused(g) {
   return g.status === 'running' && !g.active && g.lastTurnEnd > 0
+}
+
+// Claude sits idle while background work it started carries the running step: nothing can be said
+// to it, so at the times askDue names a fork of the conversation (its own transcript, same model,
+// served from the prompt cache, shown to no one) is asked how much longer, and the answer is taken
+// as Claude's own. Every ask goes into ~/.claude/mods-data/goal-meter/asks.jsonl with what it cost.
+// `/goals ask off` turns it off.
+async function idleAsk($) {
+  if (!settings.ask || forking || !G || G.status !== 'running' || G.active || working || background === 0) return
+  const at = await $.clock.now()
+  const ask = askDue(G, at)
+  if (!ask) return
+  const t = ask.task
+  if (ask.late) t.overdueSaid = true
+  else Object.assign(t, { asked: true, checks: (t.checks || 0) + 1 })
+  await save($)
+  forking = true
+  const entry = { at: new Date(at).toISOString(), session: G.sessionId, step: t.title, ranMin: Math.round((at - t.startedAt) / 60000), givenMin: t.minutes || 0, late: ask.late }
+  try {
+    const r = await $.model.fork({ prompt: forkPrompt(t, at, backgroundWork) })
+    entry.answered = r.isAnswered
+    if (r.isAnswered) entry.reply = clip(String(r.text || ''), 200)
+    else entry.reason = r.reason
+    if (r.usage) entry.usage = r.usage
+    const more = r.isAnswered ? minutesIn(r.text) : 0
+    entry.moreMin = more
+    if (more && G && t.status === 'active') {
+      reestimate(t, more, await $.clock.now())
+      await save($)
+      $.ui.invalidate('ui.render')
+    }
+  } catch (err) {
+    entry.error = clip(String(err && err.message ? err.message : err), 200)
+  } finally {
+    forking = false
+    await logAsk($, entry)
+  }
+}
+
+async function logAsk($, entry) {
+  if (!home) return
+  const path = `${home}${DIR}/asks.jsonl` // .jsonl: the plan list reads .json files only
+  try {
+    let old = ''
+    try { old = await $.fs.read(path) } catch {}
+    const lines = old.split('\n').filter(Boolean).slice(-299)
+    await $.fs.write(path, [...lines, JSON.stringify(entry)].join('\n') + '\n')
+  } catch {
+    // the log is for looking back; the ask itself already counted
+  }
 }
 
 // Something is still at work on the plan: a turn, or background tasks the last turn left running.
@@ -761,7 +839,7 @@ function drawPane(el, width, surface) {
   if (!rest.length) rows.push(Text({ dimColor: true, children: ['No other chat has a goal in the last 12 hours.'] }))
   for (const g of rest.slice(0, 15)) rows.push(otherRow(el, g, width))
   rows.push(Text({ children: [' '] }))
-  rows.push(Text({ dimColor: true, children: [`/${commandName} hide|show (the band) · /${commandName} strict ${settings.strict ? 'off' : 'on'} · /${commandName} clear`] }))
+  rows.push(Text({ dimColor: true, children: [`/${commandName} hide|show (the band) · /${commandName} strict ${settings.strict ? 'off' : 'on'} · /${commandName} ask ${settings.ask ? 'off' : 'on'} · /${commandName} clear`] }))
   return Box({ flexDirection: 'column', children: rows })
 }
 

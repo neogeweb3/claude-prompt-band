@@ -80,30 +80,87 @@ export function progress(goal) {
   }
 }
 
-// The time left for the whole plan: every step not finished, at the time it is expected to take,
-// less what the running one has had already. A step Claude gave minutes for is expected to take
-// that long; any other, its size at the pace of the steps finished so far, by their own times
-// (not the time since the plan, which a long step under way would stretch: the neo-fitness gate,
-// 2026-10-07, read 6m left, then 11m seven minutes later). A step past what it was expected to
-// take adds nothing more, so the time left never grows while one runs long, and it reads at least
-// a minute while work is left. Nothing until two steps are timed, unless Claude gave every
-// step left its minutes.
+// The time left for the whole plan, the way evidence-based scheduling does it (FogBugz, Joel
+// Spolsky 2007): whoever does the work estimates each step, and the estimates are corrected by how
+// they have held up. Claude gives each step its minutes; a step done shows what it really took, and
+// the steps left are scaled by the plan's own record, all the minutes it estimated for the steps
+// done against all they really took (a sum, not an average of each step's ratio, so the long steps
+// count for more than a one-minute read that took two: the minute is too coarse to say much). Until
+// the steps done were estimated at CORRECT_AFTER together, Claude's minutes are taken as given.
+// A step with no minutes (a plan from before Claude gave them) goes by its size, at the pace of the
+// steps done.
+const CORRECT_AFTER = 5 * 60000
+function expectation(goal) {
+  const tasks = live(goal)
+  const timed = tasks.filter((t) => t.status === 'done' && !t.untimed && t.doneAt > t.startedAt)
+  const took = (t) => t.doneAt - t.startedAt
+  const est = timed.filter((t) => t.minutes)
+  const said = est.reduce((a, t) => a + t.minutes * 60000, 0)
+  const scale = said > 0 && said >= CORRECT_AFTER ? est.reduce((a, t) => a + took(t), 0) / said : 1
+  const sized = timed.filter((t) => !t.minutes)
+  const w = sized.reduce((a, t) => a + weight(t), 0)
+  const pace = sized.length >= 2 && w ? sized.reduce((a, t) => a + took(t), 0) / w : 0
+  return (t) => (t.minutes ? t.minutes * 60000 * scale : pace * weight(t))
+}
+
+// The running one counts down from what it is expected to take. Past that, it is late, and a late
+// step is not about to end: task times have a long tail (Bernhardsson 2019: the median close to
+// the estimate, the mean 1.8 times it), the longer one has overrun the longer it tends to go on,
+// and neither Jira's 0 nor Jenkins' "N/A" says anything true. So until Claude gives it new minutes,
+// a late step is taken to need as long again as it has overrun. The time left reads at least a
+// minute while work is left.
 export function eta(goal, now) {
   const p = progress(goal)
   if (goal.status !== 'running' || p.doneW >= p.total) return null
-  const tasks = live(goal)
-  const timed = tasks.filter((t) => t.status === 'done' && !t.untimed && t.doneAt > t.startedAt)
-  const w = timed.reduce((a, t) => a + weight(t), 0)
-  const pace = timed.length >= 2 && w ? timed.reduce((a, t) => a + t.doneAt - t.startedAt, 0) / w : 0
+  const want = expectation(goal)
   let ms = 0
-  for (const t of tasks) {
+  for (const t of live(goal)) {
     if (t.status === 'done') continue
-    const want = t.minutes ? t.minutes * 60000 : pace * weight(t)
-    if (!want) return null
-    ms += t.status === 'active' ? Math.max(0, want - Math.max(0, now - t.startedAt)) : want
+    const w = want(t)
+    if (!w) return null
+    const ran = t.status === 'active' ? Math.max(0, now - t.startedAt) : 0
+    ms += ran <= w ? w - ran : ran - w
   }
   ms = Math.max(60000, Math.round(ms))
   return { ms, at: now + ms }
+}
+
+// When to ask Claude how much longer the running step has, read after its next tool call (the
+// mod can say nothing to it while it waits, idle, on background work). Late: once past what the
+// step was expected to take. Early, for a step Claude gave EARLY_FROM or more: a quarter of the
+// way into its estimate, and after an answer that moved the finish by more than a STEADY share of
+// the estimate, a quarter of the way into the new one; an answer that kept it, and EARLY_MAX asks,
+// end the early asks (Neo, 2026-10-08: ask before it is late, but not over and over).
+// Returns { task, late } or null.
+const EARLY_FROM = 10
+const EARLY_MAX = 2
+const STEADY = 0.2
+export function askDue(goal, now) {
+  if (goal.status !== 'running') return null
+  const want = expectation(goal)
+  for (const t of live(goal)) {
+    if (t.status !== 'active') continue
+    const w = want(t)
+    if (w > 0 && !t.overdueSaid && now - t.startedAt > w) return { task: t, late: true }
+    const span = t.span || (t.minutes || 0) * 60000
+    if (t.minutes >= EARLY_FROM && !t.steady && !t.asked && (t.checks || 0) < EARLY_MAX && now - (t.estAt || t.startedAt) >= span / 4) return { task: t, late: false }
+  }
+  return null
+}
+
+// Claude's answer, "minutes" more from now, for a step under way: its estimate counts from now;
+// one that moved the finish little says the step is on course, so it is asked early no more
+export function reestimate(t, more, now) {
+  const before = t.minutes ? t.startedAt + t.minutes * 60000 : 0
+  const after = now + more * 60000
+  Object.assign(t, {
+    minutes: Math.round(((now - t.startedAt) / 60000 + more) * 10) / 10,
+    estAt: now,
+    span: more * 60000,
+    asked: false,
+    overdueSaid: false,
+    steady: before > 0 && Math.abs(after - before) <= STEADY * (before - t.startedAt),
+  })
 }
 
 // Minutes Claude expects a step to take: a number above 0, up to a day; 0 when not given
@@ -196,14 +253,28 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
     const tasks = ids.map((id) => goal.tasks.find((t) => t.id === id && !t.replaced))
     const missing = ids.filter((id, i) => !tasks[i])
     if (missing.length) return fail(`no task #${missing.join(', #')}.`)
-    if (action === 'done') unstarted = tasks.filter((t) => t.status === 'pending').length
+    if (action === 'done') {
+      // A step marked done that never started, while the next one in the list started by itself:
+      // that time was this step's, not the next one's (Claude did steps it added at the end before
+      // the one the list put next: the neo-mate gate, 2026-10-08, ran its clock half an hour over
+      // two other steps, which then read "—"). Only for a single step: a batch marked at the end
+      // says nothing about when each ran.
+      const auto = goal.tasks.find((t) => t.auto && t.status === 'active' && !ids.includes(t.id))
+      const pending = tasks.filter((t) => t.status === 'pending')
+      if (auto && pending.length === 1 && tasks.length === 1) {
+        Object.assign(pending[0], { status: 'active', startedAt: auto.startedAt })
+        Object.assign(auto, { status: 'pending', startedAt: 0, auto: false })
+      }
+      unstarted = tasks.filter((t) => t.status === 'pending').length
+    }
     for (const t of tasks) {
       if (action === 'start') {
         t.status = 'active'
         t.startedAt = t.startedAt || now
         if (by) t.by = clean(by, 32)
-        // how long it will take, given when it begins or again when that changes
-        if (minutesOf(input.minutes)) t.minutes = minutesOf(input.minutes)
+        // how much longer it will take from now, given when it begins or again when that changes
+        const more = minutesOf(input.minutes)
+        if (more) reestimate(t, more, now)
       } else if (action === 'done') {
         // never started (marked done with others at the end, or skipped to): when it ran is not
         // known, so it shows no time rather than a made-up one
@@ -252,10 +323,10 @@ export const TOOL_SPEC = {
   name: 'tasks',
   description:
     'Goal meter: the task plan the user watches as a progress bar while a /goal runs. ' +
-    'Call action "plan" first with every task needed to meet the goal, in order, each sized S, M, or L. ' +
+    'Call action "plan" first with every task needed to meet the goal, in order, each sized S, M, or L, with the minutes you expect it to take. ' +
     'Call "start" with a task id when you begin it (set "by" to a subagent\'s short name when one does it) and "done" when it is finished. ' +
     'Call "add" for work you discover or when the goal check says the goal is not met yet, and "drop" for a task no longer needed. ' +
-    'When you can tell how long a step will take (a build or test suite running in the background, say), give its "minutes"; call "start" with its id and new "minutes" when that changes. ' +
+    'When a step will take longer or shorter than you said (a build or test suite running in the background, say), call "start" with its id and "minutes", how many more from now. ' +
     'Keep it accurate: the bar and the ETA come only from this list.',
   inputSchema: {
     type: 'object',
@@ -270,7 +341,7 @@ export const TOOL_SPEC = {
           properties: {
             title: { type: 'string', description: 'What the task delivers, in a few words' },
             size: { type: 'string', enum: ['S', 'M', 'L'], description: 'S: a few minutes. M: a solid chunk. L: the big piece.' },
-            minutes: { type: 'number', description: 'Optional: how many minutes you expect the step to take, when you can tell' },
+            minutes: { type: 'number', description: 'How many minutes you expect the step to take; the time left on the row comes from these' },
           },
           required: ['title'],
         },
@@ -278,7 +349,7 @@ export const TOOL_SPEC = {
       id: { type: 'number', description: 'For start, done, and drop: the task number' },
       ids: { type: 'array', items: { type: 'number' }, description: 'Several task numbers at once' },
       by: { type: 'string', description: 'For start: who does it, "main" or the subagent\'s short name' },
-      minutes: { type: 'number', description: 'For start: how many minutes you now expect the step to take' },
+      minutes: { type: 'number', description: 'For start: how many more minutes from now you expect the step to take, when that has changed' },
       note: { type: 'string', description: 'For done or drop: one short line' },
     },
     required: ['action'],
@@ -288,7 +359,7 @@ export const TOOL_SPEC = {
 export function instruction(tool) {
   return (
     `Goal meter is on for this goal: the user watches your progress as a bar built from your task plan. ` +
-    `Before you start the work, call ${tool} (load it with ToolSearch if it is deferred) with action "plan" and every task needed to meet the goal, in order, each sized S, M, or L. ` +
+    `Before you start the work, call ${tool} (load it with ToolSearch if it is deferred) with action "plan" and every task needed to meet the goal, in order, each sized S, M, or L, with the minutes you expect it to take. ` +
     `Call "start" with a task's id when you begin it and "done" when it is finished. ` +
     `If you find more work, or the goal check says the goal is not met yet, call "add" with the new tasks. ` +
     `When a subagent does a task, call "start" with "by" set to its short name, and "done" when it reports back.`
@@ -311,13 +382,13 @@ export function autoPlan(tool) {
     `The user watches a progress row above the prompt, built from your task plan. ` +
     `When a request needs several steps of work (roughly three or more steps that use tools), call ${tool} ` +
     `before your first other tool call, with action "plan", "goal" (a few words naming the whole task, in the user's language) and the steps in order, ` +
-    `each with a short title in the user's language and a size S, M or L. ` +
+    `each with a short title in the user's language, a size S, M or L, and "minutes", how long you expect it to take. ` +
     `Keep every step title within 15 Chinese characters (or 30 Latin letters), one thing per step: the card that lists them cannot grow wider and cuts longer titles. ` +
     `This includes picking up earlier work: "continue", resuming from a handoff, or fixing what the user just reported. ` +
     `The first step starts by itself. Call "done" with a step's id the moment it is finished, one step at a time, each as it happens, never several at the end: ` +
     `the next step then starts by itself. Call "start" only to take up a step out of order. "add" new steps you discover, ` +
     `"drop" ones no longer needed. A new, unrelated request gets a new "plan". ` +
-    `When you can tell how long a step will take (a build or test suite running in the background, say), give its "minutes", and call "start" with its id and new "minutes" when that changes: the time left on the row comes from it. ` +
+    `The time left on the row comes from those minutes: when a step will take longer or shorter than you said (a build or test suite running in the background, say), call "start" with its id and "minutes", how many more from now. ` +
     `List only steps you do yourself, never one that waits on the user (their reply, a screenshot, a check on their side). ` +
     `Before you end your turn, every step is done or dropped, unless background work you started is still carrying it. ` +
     `Skip all of this for quick answers, single lookups and one-step edits.`
@@ -331,4 +402,44 @@ export function autoNudge(tool) {
     `If more work is ahead, call ${tool} with action "plan" now (a "goal" and the steps), then mark the steps already finished as done. ` +
     `If you are about to answer, ignore this.`
   )
+}
+
+// Asked a quarter of the way into a long step's estimate, before it can be late
+export function earlyNudge(tool, t, now) {
+  const ran = Math.round((now - t.startedAt) / 60000)
+  return (
+    `Step #${t.id} "${t.title}" of the progress row has run ${ran} of the ${t.minutes} minutes it was given. ` +
+    `Call ${tool} with action "start", id ${t.id} and "minutes", how many more from now, even if your estimate still holds; ` +
+    `the time left on the row comes from it. Do not mention this in your reply.`
+  )
+}
+
+// Said once when the running step has gone past the time it was given: only Claude knows how much
+// longer it has (the neo-mate chat, 2026-10-08, knew it was "watching 15 more minutes")
+export function lateNudge(tool, t) {
+  return (
+    `Step #${t.id} "${t.title}" of the progress row has run past the time it was given. ` +
+    `If it needs longer, call ${tool} with action "start", id ${t.id} and "minutes", how many more from now: the time left on the row comes from it. ` +
+    `If it is about to finish, ignore this. Do not mention this in your reply.`
+  )
+}
+
+// What the mod asks a fork of the conversation (its own transcript, same model, nothing shown to
+// the person) while Claude sits idle and background work carries the running step: the time that
+// has passed is not in the transcript, so the question says it
+export function forkPrompt(t, now, background) {
+  const ran = Math.round((now - t.startedAt) / 60000)
+  const given = t.minutes ? `; you gave it ${t.minutes}` : ''
+  const bg = background.length ? ` Work you started in the background is still running: ${background.join('; ')}.` : ''
+  return (
+    `(A question from the progress-row mod, not from the user; answer it and nothing else.) ` +
+    `Step #${t.id} "${t.title}" of your task plan has run ${ran} minutes${given}.${bg} ` +
+    `From what you know of that work, how many more minutes from now until this step is done? Reply with one number of minutes only.`
+  )
+}
+
+// The minutes in a fork's reply: the first number in it, above 0 and up to a day; 0 when none
+export function minutesIn(text) {
+  const m = String(text || '').match(/\d+(?:\.\d+)?/)
+  return m ? minutesOf(m[0]) : 0
 }

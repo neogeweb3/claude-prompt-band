@@ -21,6 +21,12 @@ claude plugin install usage-band@claude-prompt-band
 
 这类插件需要较新的 Claude Code，`claude --version` 2.1.288 实测可用。
 
+## goal-meter 的「还剩多久」怎么算
+
+Claude 列计划时给每一步报一个预计分钟数。每做完一步，剩下的步骤按这个计划里 Claude「估的分钟数总和 ÷ 实际用的总和」来修正（做法来自 evidence-based scheduling）。正在跑的那一步往下倒数；超时以后，按「已经超出多少，就再加多少」来估，绝不当作马上就完。
+
+10 分钟以上的步骤，跑到预计时间的 1/4 时会问 Claude 还要多久；回答改动大就到新估计的 1/4 再问一次，回答没怎么变、或者已经问过两次就不再提前问；超时时再问一次。Claude 在干活时，问题附在它下一次工具调用的结果里；Claude 空闲、在等后台任务时，改为问一个对话分身（同一个模型，走提示缓存，不显示给任何人），每次问的内容和花的 token 记在 `~/.claude/mods-data/goal-meter/asks.jsonl`。`/goals ask off` 关掉这种分身提问。
+
 ## 关掉其中一个
 
 ```
@@ -40,7 +46,7 @@ claude plugin update usage-band@claude-prompt-band
 
 ## 会存什么、存在哪
 
-不往外发任何数据。goal-meter 把每个对话的计划存在 `~/.claude/mods-data/goal-meter/<对话>.json`（`/goals` 用它列出所有对话的计划）。usage-band 通过 `~/.claude/usage-band-shared.json` 在开着的对话之间共享最新额度，这样闲着的对话也能显示准确的额度。两个插件都不会自己调用模型；goal-meter 会在系统提示里加一小段，让 Claude 遇到多步任务时列出步骤。
+不往外发任何数据。goal-meter 把每个对话的计划存在 `~/.claude/mods-data/goal-meter/<对话>.json`（`/goals` 用它列出所有对话的计划）。usage-band 通过 `~/.claude/usage-band-shared.json` 在开着的对话之间共享最新额度，这样闲着的对话也能显示准确的额度。usage-band 不会自己调用模型。goal-meter 会在系统提示里加一小段，让 Claude 遇到多步任务时列出步骤；Claude 空闲、在等后台任务时，它可能问一个对话分身某一步还要多久（走你自己的账号和用量，每次连同花的 token 记在 `~/.claude/mods-data/goal-meter/asks.jsonl`；`/goals ask off` 关掉）。
 
 ## 致谢
 

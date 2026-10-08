@@ -21,6 +21,12 @@ claude plugin install usage-band@claude-prompt-band
 
 Hooks modules (the kind of plugin these are) need a recent Claude Code; `claude --version` 2.1.288 is known to work.
 
+## How goal-meter's time left works
+
+Claude gives every step its minutes when it lists the plan. As steps finish, the steps left are scaled by how Claude's estimates have held up in this plan (all the minutes it estimated for the finished steps against all they really took), the way evidence-based scheduling does it. The running step counts down; once it is late it is taken to need as long again as it has overrun, never to be nearly done.
+
+For a step of ten minutes or more, goal-meter asks Claude how much longer a quarter of the way in, and once more after an answer that moved the finish a lot; it stops after an answer that kept it, or after two asks, and asks again once a step is late. While Claude works, the question rides on its next tool call. While it sits idle waiting on background work, a fork of the conversation is asked instead (same model, served from the prompt cache, shown to no one); each such ask and its token count goes into `~/.claude/mods-data/goal-meter/asks.jsonl`. `/goals ask off` turns those forks off.
+
 ## Turn one off
 
 ```
@@ -40,7 +46,7 @@ claude plugin update usage-band@claude-prompt-band
 
 ## What they keep, and where
 
-Nothing leaves your machine. goal-meter writes each chat's plan to `~/.claude/mods-data/goal-meter/<session>.json` (so `/goals` can list every chat's plan). usage-band shares the latest limit reading between open chats through `~/.claude/usage-band-shared.json`, so an idle chat's band stays current. Neither sends model requests of its own; goal-meter adds one short section to the system prompt asking Claude to plan multi-step work.
+Nothing leaves your machine. goal-meter writes each chat's plan to `~/.claude/mods-data/goal-meter/<session>.json` (so `/goals` can list every chat's plan). usage-band shares the latest limit reading between open chats through `~/.claude/usage-band-shared.json`, so an idle chat's band stays current. usage-band sends no model requests of its own. goal-meter adds one short section to the system prompt asking Claude to plan multi-step work, and while Claude waits idle on background work it may ask a fork of the conversation how much longer a step has (on your own account and usage, logged with its token count in `~/.claude/mods-data/goal-meter/asks.jsonl`; `/goals ask off` stops it).
 
 ## Credits
 

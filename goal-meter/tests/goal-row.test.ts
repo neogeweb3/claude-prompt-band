@@ -489,7 +489,7 @@ test('a plan marked only with "done" times every step; a "done" for a step never
   expect([...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])).toEqual(['42s', '1m 05s', '9s', '—'])
 })
 
-test('the time left counts down while a long step runs, never up', async ($, on) => {
+test('the time left counts down while a step runs, and a late step is not taken to be nearly done', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
@@ -514,9 +514,9 @@ test('the time left counts down while a long step runs, never up', async ($, on)
     await clock.advance(443000)
     return [a, await left()]
   }
-  // by the pace of the steps done (90s a size unit): the gate's 4m 30s counts down, then
-  // only 汇报's minute and a half is left, however long the gate runs over
-  expect(await run(0)).toEqual(['5m', '2m'])
+  // by the pace of the steps done (90s a size unit) the gate takes 4m 30s and counts down; at
+  // 7m 58s it is 3m 28s late and taken to need that again, plus 汇报's minute and a half
+  expect(await run(0)).toEqual(['5m', '5m'])
 })
 
 test('Claude\'s own minutes for a step are what the time left counts down from', async ($, on) => {
@@ -546,6 +546,233 @@ test('Claude\'s own minutes for a step are what the time left counts down from',
   }
   // Claude said the gate takes 18 minutes
   expect(await run(18)).toEqual(['19m', '12m'])
+})
+
+test('every step\'s minutes from Claude, scaled by how its estimates held up in this plan', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const left = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+    await ui.unmount()
+    return (alt.match(/剩约 (\S+)/) || [])[1]
+  }
+  // the neo-fitness plan's real times; the minutes are made up (that chat gave none)
+  const run = async (mins: number[]) => {
+    await clock.advance(60000)
+    await $.turn.start({ text: '做', turnId: 't' })
+    await tasks('plan', { goal: '倾斜提示 + 完整门禁', tasks: ['读', '定', '写', '测', '门禁', '汇报'].map((title, i) => ({ title, size: 'SMMMLS'[i], minutes: mins[i] })) })
+    for (const [id, ms] of [[1, 40000], [2, 324000], [3, 28000], [4, 239000]]) { await clock.advance(ms); await tasks('done', { id }) }
+    await clock.advance(35000)
+    const a = await left()
+    await clock.advance(443000)
+    return [a, await left()]
+  }
+  // 17 minutes said for the four steps done, 10m 31s taken: the gate's 18 read as 11
+  expect(await run([2, 5, 5, 5, 18, 2])).toEqual(['12m', '4m'])
+})
+
+test('a few one-minute steps that ran over do not stretch a long step\'s minutes', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  await clock.advance(60000)
+  await $.turn.start({ text: '做', turnId: 't' })
+  await tasks('plan', { goal: '门禁', tasks: ['读', '定', '写', '测', '门禁', '汇报'].map((title, i) => ({ title, size: 'SMMMLS'[i], minutes: [1, 1, 1, 1, 18, 2][i] })) })
+  for (const [id, ms] of [[1, 40000], [2, 324000], [3, 28000], [4, 239000]]) { await clock.advance(ms); await tasks('done', { id }) }
+  await clock.advance(35000)
+  const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+  const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+  await ui.unmount()
+  // 4 minutes said, 10m 31s taken: scaled, the gate would read 47 minutes; too little said yet to go by
+  expect(alt).toContain('剩约 19m')
+})
+
+test('a step marked done while the next in the list had started by itself gets that time', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const T = (hms: string) => Date.parse('2026-10-08T' + hms + 'Z')
+  let at = T('08:22:00')
+  const to = async (hms: string) => { await clock.advance(T(hms) - at); at = T(hms) }
+  // the neo-mate plan of 2026-10-08, at its own times
+  await clock.advance(at)
+  await $.turn.start({ text: '做', turnId: 't' })
+  await to('08:22:19')
+  await tasks('plan', { goal: '补审 Twenty + 单聊增量更新', tasks: [{ title: '读源码', size: 'M' }, { title: '缩减', size: 'M' }, { title: '40 次对照', size: 'L' }, { title: '收消息', size: 'L' }, { title: '全量门禁', size: 'M' }] })
+  await to('08:23:19'); await tasks('done', { id: 1 })
+  await to('08:25:31'); await tasks('done', { id: 2 })
+  await to('08:32:46'); await tasks('done', { id: 4 }) // while #3 (started by itself) ran in the background
+  await to('08:36:52'); await tasks('add', { tasks: [{ title: '群名对 ID', size: 'S' }, { title: '群消息归档', size: 'M' }, { title: '设置页', size: 'M' }] })
+  await to('08:37:08'); await tasks('done', { ids: [3, 6] })
+  await to('08:41:11'); await tasks('done', { id: 7 }) // done before #5, which the list put next
+  await to('08:43:44'); await tasks('done', { id: 8 })
+  await to('08:50:00')
+  const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+  // the card is the image listing the steps (a long row adds pieces either side of it)
+  const card = String((await ui.findAll({ type: 'Svg' })).find((i) => String(i.props.alt).startsWith('读源码'))!.props.source)
+  await ui.unmount()
+  // before: #5 ran from 08:37:08 and #4, #7, #8 read "—"; #6, marked in a batch with #3, still does
+  expect([...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])).toEqual(['1m 00s', '2m 12s', '4m 22s', '7m 15s', '6m 16s', '—', '4m 03s', '2m 33s'])
+})
+
+test('a step past its time asks Claude once for how much longer, and takes the answer from now', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const bash = async () => JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'sleep 1' } as never))
+  const left = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+    await ui.unmount()
+    return (alt.match(/剩约 (\S+)/) || [])[1]
+  }
+  await clock.advance(60000)
+  await $.turn.start({ text: '做', turnId: 't' })
+  await tasks('plan', { goal: '装机', tasks: [{ title: '门禁', size: 'L', minutes: 45 }, { title: '汇报', size: 'S', minutes: 2 }] })
+  await clock.advance(44 * 60000)
+  expect(await bash()).not.toContain('has run past')
+  expect(await left()).toBe('3m')
+  await clock.advance(16 * 60000)
+  // 15 minutes late: taken to need 15 more, plus 汇报
+  expect(await left()).toBe('17m')
+  expect(await bash()).toContain('of the progress row has run past')
+  expect(await bash()).not.toContain('has run past')
+  // Claude: 10 more minutes from now
+  await tasks('start', { id: 1, minutes: 10 })
+  expect(await left()).toBe('12m')
+  await clock.advance(11 * 60000)
+  expect(await bash()).toContain('has run past') // late again: asked again
+})
+
+test('a long step is asked how much longer a quarter of the way in, again after a big change, then no more', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const bash = async () => JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'sleep 1' } as never))
+  const min = (m: number) => clock.advance(m * 60000)
+  await min(1)
+  await $.turn.start({ text: '做', turnId: 't' })
+  await tasks('plan', { goal: '门禁', tasks: [{ title: '门禁', size: 'L', minutes: 10 }, { title: '汇报', size: 'S', minutes: 2 }] })
+  await min(2)
+  expect(await bash()).not.toContain('progress row') // not yet a quarter of 10 minutes
+  await min(0.75)
+  expect(await bash()).toContain('has run 3 of the 10 minutes it was given')
+  expect(await bash()).not.toContain('progress row') // asked once
+  // Neo's example: it will take 20 in all, so 17 more: asked again a quarter of 17 later
+  await tasks('start', { id: 1, minutes: 17 })
+  await min(4)
+  expect(await bash()).not.toContain('progress row')
+  await min(0.5)
+  expect(await bash()).toContain('has run 7 of the 19.8 minutes it was given')
+  // still the same finish: on course, no more early asks
+  await tasks('start', { id: 1, minutes: 12.5 })
+  await min(6)
+  expect(await bash()).not.toContain('progress row')
+  // only once it is late
+  await min(7)
+  expect(await bash()).toContain('has run past')
+})
+
+test('an answer that keeps the finish where it was ends the early asks at once', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const bash = async () => JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'sleep 1' } as never))
+  const min = (m: number) => clock.advance(m * 60000)
+  await min(1)
+  await $.turn.start({ text: '做', turnId: 't' })
+  await tasks('plan', { goal: '门禁', tasks: [{ title: '门禁', size: 'L', minutes: 20 }] })
+  await min(5)
+  expect(await bash()).toContain('has run 5 of the 20')
+  await tasks('start', { id: 1, minutes: 16 }) // 21 in all: about where it was
+  await min(6) // past a quarter of 16, still short of late
+  expect(await bash()).not.toContain('progress row')
+})
+
+test('early asks stop after two, and a step under ten minutes is asked only once late', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const bash = async () => JSON.stringify(await $.tool.call({ tool: 'Bash', command: 'sleep 1' } as never))
+  const min = (m: number) => clock.advance(m * 60000)
+  await min(1)
+  await $.turn.start({ text: '做', turnId: 't' })
+  await tasks('plan', { goal: '两步', tasks: [{ title: '长', size: 'L', minutes: 12 }, { title: '短', size: 'S', minutes: 8 }] })
+  await min(3)
+  expect(await bash()).toContain('has run 3 of the 12')
+  await tasks('start', { id: 1, minutes: 30 }) // a big change: asked again
+  await min(7.5)
+  expect(await bash()).toContain('has run 11 of the 33')
+  await tasks('start', { id: 1, minutes: 40 }) // another big change, but two early asks are the most
+  await min(20)
+  expect(await bash()).not.toContain('progress row')
+  await min(20)
+  await tasks('done', { id: 1 }) // on the minute it said: its estimates scale 短 by 1
+  // 短 is under ten minutes: nothing until it runs past its 8
+  await min(6)
+  expect(await bash()).not.toContain('progress row')
+  await min(3)
+  expect(await bash()).toContain('has run past')
+})
+
+test('while Claude waits on background work, a fork of the conversation is asked how much longer', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const asked: string[] = []
+  on('store.set', () => ({ value: undefined }))
+  on('command.run', () => ({}))
+  // an op the host serves: a stand-in answers { value }
+  on('model.fork', (_$, e) => { asked.push(e.prompt); return { value: { isAnswered: true, text: '30', usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 400000, cache_creation_input_tokens: 0 } } } })
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const left = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+    await ui.unmount()
+    return (alt.match(/剩约 (\S+)/) || [])[1]
+  }
+  const min = (m: number) => clock.advance(m * 60000)
+  await min(1)
+  await $.turn.start({ text: '跑门禁', turnId: 't1' })
+  await tasks('plan', { goal: '门禁', tasks: [{ title: '全量门禁', size: 'L', minutes: 20 }] })
+  // the gate goes to the background and the turn ends: Claude makes no tool call until it wakes
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'Run full verify-native gate' }] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  await min(4.5)
+  expect(asked).toHaveLength(0) // not yet a quarter of 20
+  await min(1)
+  expect(asked).toHaveLength(1)
+  expect(asked[0]).toContain('has run 5 minutes; you gave it 20')
+  expect(asked[0]).toContain('Run full verify-native gate')
+  // the answer, 30 more from the ask (made on a 15-second check), is the step's new estimate:
+  // two minutes on, 28 left
+  await min(2)
+  expect(await left()).toBe('28m')
+  await min(8)
+  expect(asked).toHaveLength(2) // a big change: once more, a quarter of 30 later
+  // turned off: no more asks
+  await $.command.run({ command: 'goals', args: 'ask off' } as never)
+  await min(60)
+  expect(asked).toHaveLength(2)
 })
 
 test('every step done but a background task still running: not finished until it ends', async ($, on) => {
