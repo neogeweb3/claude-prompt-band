@@ -775,6 +775,37 @@ test('while Claude waits on background work, a fork of the conversation is asked
   expect(asked).toHaveLength(2)
 })
 
+test('an answer is taken as given, so a step is not asked again and again (6 forks in 90 seconds, 2026-10-08)', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const asked: string[] = []
+  on('model.fork', (_$, e) => { asked.push(e.prompt); return { value: { isAnswered: true, text: '4', usage: { input_tokens: 130, output_tokens: 3, cache_read_input_tokens: 392041, cache_creation_input_tokens: 0 } } } })
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  await clock.advance(60000)
+  await $.turn.start({ text: '核对', turnId: 't1' })
+  // this repo's own chat: 9 minutes said for three steps that took 49 seconds
+  await tasks('plan', { goal: '核对', tasks: [{ title: '找', size: 'S', minutes: 2 }, { title: '读', size: 'M', minutes: 4 }, { title: '日志', size: 'S', minutes: 3 }, { title: '对照', size: 'S', minutes: 3 }] })
+  await clock.advance(16000); await tasks('done', { id: 1 })
+  await clock.advance(33000); await tasks('done', { id: 2 })
+  await clock.advance(1000); await tasks('done', { id: 3 })
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'Wait for the gate' }] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  // 对照's 3 minutes, scaled no lower than half: late at 1m 30s, asked once; the answer, 4 more
+  // minutes from then, holds until it runs out
+  await clock.advance(5 * 60000)
+  expect(asked).toHaveLength(1)
+  // late again past those 4 minutes: asked again, no sooner than two minutes on
+  await clock.advance(2 * 60000)
+  expect(asked).toHaveLength(2)
+  // never more than four asks for a step
+  await clock.advance(120 * 60000)
+  expect(asked.length).toBeLessThanOrEqual(4)
+})
+
 test('every step done but a background task still running: not finished until it ends', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))

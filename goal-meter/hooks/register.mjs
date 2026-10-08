@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, eta, askDue, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, eta, askDue, markAsked, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -395,8 +395,7 @@ export function register(on) {
     const ask = !e.agentId && G && G.status === 'running' ? askDue(G, at) : null
     if (ask) {
       const t = ask.task
-      if (ask.late) t.overdueSaid = true
-      else Object.assign(t, { asked: true, checks: (t.checks || 0) + 1 })
+      markAsked(t, ask.late, at)
       await save($)
       const r = await run()
       if (!r || r.deny || !('result' in r)) return r
@@ -571,8 +570,7 @@ async function idleAsk($) {
   const ask = askDue(G, at)
   if (!ask) return
   const t = ask.task
-  if (ask.late) t.overdueSaid = true
-  else Object.assign(t, { asked: true, checks: (t.checks || 0) + 1 })
+  markAsked(t, ask.late, at)
   await save($)
   forking = true
   const entry = { at: new Date(at).toISOString(), session: G.sessionId, step: t.title, ranMin: Math.round((at - t.startedAt) / 60000), givenMin: t.minutes || 0, late: ask.late }

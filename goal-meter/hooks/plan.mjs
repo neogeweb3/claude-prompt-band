@@ -96,11 +96,16 @@ function expectation(goal) {
   const took = (t) => t.doneAt - t.startedAt
   const est = timed.filter((t) => t.minutes)
   const said = est.reduce((a, t) => a + t.minutes * 60000, 0)
-  const scale = said > 0 && said >= CORRECT_AFTER ? est.reduce((a, t) => a + took(t), 0) / said : 1
+  // held to between half and twice: three steps estimated at 9 minutes that took 49 seconds (this
+  // repo's own chat, 2026-10-08) would otherwise cut every estimate left to a tenth
+  const scale = said > 0 && said >= CORRECT_AFTER ? Math.min(2, Math.max(0.5, est.reduce((a, t) => a + took(t), 0) / said)) : 1
   const sized = timed.filter((t) => !t.minutes)
   const w = sized.reduce((a, t) => a + weight(t), 0)
   const pace = sized.length >= 2 && w ? sized.reduce((a, t) => a + took(t), 0) / w : 0
-  return (t) => (t.minutes ? t.minutes * 60000 * scale : pace * weight(t))
+  // an answer to "how much longer" is already today's word: taken as given, never scaled (scaled,
+  // a 4-minute answer read as 20 seconds, so the step was late again at once and asked again, every
+  // 15 seconds: 6 forks in a row, 2026-10-08)
+  return (t) => (t.estAt ? t.estAt - t.startedAt + t.span : t.minutes ? t.minutes * 60000 * scale : pace * weight(t))
 }
 
 // The running one counts down from what it is expected to take. Past that, it is late, and a late
@@ -135,17 +140,28 @@ export function eta(goal, now) {
 const EARLY_FROM = 10
 const EARLY_MAX = 2
 const STEADY = 0.2
+// whatever else goes wrong, a step is asked at most ASK_MAX times, ASK_GAP apart
+const ASK_MAX = 4
+const ASK_GAP = 2 * 60000
 export function askDue(goal, now) {
   if (goal.status !== 'running') return null
   const want = expectation(goal)
   for (const t of live(goal)) {
     if (t.status !== 'active') continue
+    if ((t.asks || 0) >= ASK_MAX || (t.lastAskAt && now - t.lastAskAt < ASK_GAP)) continue
     const w = want(t)
     if (w > 0 && !t.overdueSaid && now - t.startedAt > w) return { task: t, late: true }
     const span = t.span || (t.minutes || 0) * 60000
     if (t.minutes >= EARLY_FROM && !t.steady && !t.asked && (t.checks || 0) < EARLY_MAX && now - (t.estAt || t.startedAt) >= span / 4) return { task: t, late: false }
   }
   return null
+}
+
+// An ask is going out for this step: count it
+export function markAsked(t, late, now) {
+  if (late) t.overdueSaid = true
+  else Object.assign(t, { asked: true, checks: (t.checks || 0) + 1 })
+  Object.assign(t, { asks: (t.asks || 0) + 1, lastAskAt: now })
 }
 
 // Claude's answer, "minutes" more from now, for a step under way: its estimate counts from now;
