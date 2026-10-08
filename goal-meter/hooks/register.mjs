@@ -664,7 +664,7 @@ function drawRow(el, e) {
     // the frame is always FRAME.w wide. So the keyed Box is exactly FRAME.w wide, centred: the
     // row is drawn into it, padded with blank room when narrower, and when wider the parts that
     // stick out are drawn as two more pieces of the same image on either side, outside the hover.
-    const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
+    const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status === 'active' && !busy(G) ? 'paused' : t.status, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
     const pop = el.Box({ position: 'absolute', bottom: 1, left: 0, display: 'none', hover: { display: 'flex' }, children: [el.Svg({ source: card.svg, alt: steps.map((t) => t.title).join(', '), width: card.width, height: card.height })] })
     const span = Math.max(row.width, FRAME.w)
     const pad = (span - row.width) / 2

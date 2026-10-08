@@ -429,7 +429,7 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
     const imgs = await ui.findAll({ type: 'Svg' })
     await ui.unmount()
     const card = String(imgs.at(-1)!.props.source)
-    return { row: imgs.map((i) => String(i.props.alt)).join(' '), tails: [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1]) }
+    return { row: imgs.map((i) => String(i.props.alt)).join(' '), tails: [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1]), mark: card.includes('⏸') ? '⏸' : card.includes('▶') ? '▶' : '' }
   }
   const stop = (bg: number) => $.classic.Stop({ stop_hook_active: false, background_tasks: Array.from({ length: bg }, (_, i) => ({ id: 'b' + i, type: 'shell', status: 'running', description: 'x' })) } as never)
   await clock.advance(60000)
@@ -444,6 +444,7 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   let v = await view()
   expect(v.tails).toEqual(['10s', '10s', '38s'])
   expect(v.row).toContain('剩约')
+  expect(v.mark).toBe('▶') // the background task is still at it
   // the background task woke a turn that ended with nothing left running: the work waits on the person
   await $.turn.start({ text: '', turnId: 't2' })
   await stop(0)
@@ -452,14 +453,19 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   v = await view()
   expect(v.tails).toEqual(['10s', '10s', '38s']) // 丙 stands where the work stopped
   expect(v.row).not.toContain('剩约')
+  // the turn stopped with nothing running: the step it is on reads paused (the jingshui chat, 2026-10-07 16:12)
+  expect(v.mark).toBe('⏸')
   // taking up 丁 out of order puts 丙 back (it had only started by itself); 丁's clock stops with the work
   await $.turn.start({ text: '继续', turnId: 't3' })
   await tasks('start', { id: 4 })
   await clock.advance(7000)
+  expect((await view()).mark).toBe('▶') // a turn at work again
   await stop(0)
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't3' })
   await clock.advance(120000)
-  expect((await view()).tails).toEqual(['10s', '10s', '7s'])
+  v = await view()
+  expect(v.tails).toEqual(['10s', '10s', '7s'])
+  expect(v.mark).toBe('⏸')
 })
 
 test('a plan marked only with "done" times every step; a "done" for a step never started says so', async ($, on) => {
@@ -481,6 +487,65 @@ test('a plan marked only with "done" times every step; a "done" for a step never
   const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
   await ui.unmount()
   expect([...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])).toEqual(['42s', '1m 05s', '9s', '—'])
+})
+
+test('the time left counts down while a long step runs, never up', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const left = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+    await ui.unmount()
+    return (alt.match(/剩约 (\S+)/) || [])[1]
+  }
+  // the neo-fitness plan of 2026-10-07 08:52, at its own times: the old estimate read 6m with
+  // the gate 35s in, 11m at 7m 58s
+  const run = async (minutes: number) => {
+    await clock.advance(60000)
+    await $.turn.start({ text: '做', turnId: 't' + minutes })
+    await tasks('plan', { goal: '倾斜提示 + 完整门禁', tasks: [{ title: '读', size: 'S' }, { title: '定', size: 'M' }, { title: '写', size: 'M' }, { title: '测', size: 'M' }, { title: '门禁', size: 'L' }, { title: '汇报', size: 'S' }] })
+    for (const [id, ms] of [[1, 40000], [2, 324000], [3, 28000], [4, 239000]]) { await clock.advance(ms); await tasks('done', { id }) }
+    if (minutes) await tasks('start', { id: 5, minutes })
+    await clock.advance(35000)
+    const a = await left()
+    await clock.advance(443000)
+    return [a, await left()]
+  }
+  // by the pace of the steps done (90s a size unit): the gate's 4m 30s counts down, then
+  // only 汇报's minute and a half is left, however long the gate runs over
+  expect(await run(0)).toEqual(['5m', '2m'])
+})
+
+test('Claude\'s own minutes for a step are what the time left counts down from', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const left = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+    await ui.unmount()
+    return (alt.match(/剩约 (\S+)/) || [])[1]
+  }
+  // the neo-fitness plan of 2026-10-07 08:52, at its own times: the old estimate read 6m with
+  // the gate 35s in, 11m at 7m 58s
+  const run = async (minutes: number) => {
+    await clock.advance(60000)
+    await $.turn.start({ text: '做', turnId: 't' + minutes })
+    await tasks('plan', { goal: '倾斜提示 + 完整门禁', tasks: [{ title: '读', size: 'S' }, { title: '定', size: 'M' }, { title: '写', size: 'M' }, { title: '测', size: 'M' }, { title: '门禁', size: 'L' }, { title: '汇报', size: 'S' }] })
+    for (const [id, ms] of [[1, 40000], [2, 324000], [3, 28000], [4, 239000]]) { await clock.advance(ms); await tasks('done', { id }) }
+    if (minutes) await tasks('start', { id: 5, minutes })
+    await clock.advance(35000)
+    const a = await left()
+    await clock.advance(443000)
+    return [a, await left()]
+  }
+  // Claude said the gate takes 18 minutes
+  expect(await run(18)).toEqual(['19m', '12m'])
 })
 
 test('every step done but a background task still running: not finished until it ends', async ($, on) => {

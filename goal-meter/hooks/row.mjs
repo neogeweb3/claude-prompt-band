@@ -210,7 +210,9 @@ export function rowSpans(r, columns = 100) {
 export const FRAME = { w: 360, pad: 12 }
 const STEP = { h: 22, top: 1, size: 13, gap: 28 }
 export const CARD = { min: FRAME.w - FRAME.pad * 2, max: FRAME.w - FRAME.pad * 2, pad: 2 }
-const MARK = { done: '✓', active: '▶', pending: '○' }
+// the step it is on: ▶ while work runs, ⏸ once the turn has stopped with nothing left running
+// (text presentation, not the colour emoji)
+const MARK = { done: '✓', active: '▶', paused: '⏸\uFE0E', pending: '○' }
 const TIME_ROOM = '12m 34s' // the time column is at least this wide
 
 // Cut text to fit `room` px, by the same measure the row uses
@@ -234,14 +236,15 @@ export function stepsSvg(steps) {
     const y = STEP.top + i * STEP.h + 15
     const hue = s.status === 'done' ? HUE.done : null
     const mark = MARK[s.status] || '○'
+    const on = s.status === 'active' || s.status === 'paused'
     const tail = s.tail ? s.tail : ''
     const x0 = CARD.pad
     const tx = x0 + 18
     const title = fit(s.title, width - tx - CARD.pad - tails[i], STEP.size)
     const markSvg = hue
       ? `<text x="${x0}" y="${y}" font-size="${STEP.size}" class="ink" style="--l:${lighten(hue, -0.38)};--d:${lighten(hue, 0.25)}">${mark}</text>`
-      : `<text x="${x0}" y="${y}" font-size="${STEP.size}" class="${s.status === 'active' ? 'lead' : 'mute'}">${mark}</text>`
-    const titleSvg = s.status === 'active'
+      : `<text x="${x0}" y="${y}" font-size="${STEP.size}" class="${on ? 'lead' : 'mute'}">${mark}</text>`
+    const titleSvg = on
       ? `<text x="${tx}" y="${y}" font-size="${STEP.size}" class="lead">${esc(title)}</text>`
       : `<text x="${tx}" y="${y}" font-size="${STEP.size}" class="${s.status === 'pending' ? 'lead' : 'mute'}">${esc(title)}</text>`
     const tailSvg = tail ? `<text x="${width - CARD.pad}" y="${y}" font-size="${STEP.size}" text-anchor="end" class="mute">${esc(tail)}</text>` : ''

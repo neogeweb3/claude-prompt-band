@@ -80,15 +80,36 @@ export function progress(goal) {
   }
 }
 
-// The ETA at this goal's own pace: time since the plan per unit of finished
-// work, times the work left. Nothing until two tasks are done.
+// The time left for the whole plan: every step not finished, at the time it is expected to take,
+// less what the running one has had already. A step Claude gave minutes for is expected to take
+// that long; any other, its size at the pace of the steps finished so far, by their own times
+// (not the time since the plan, which a long step under way would stretch: the neo-fitness gate,
+// 2026-10-07, read 6m left, then 11m seven minutes later). A step past what it was expected to
+// take adds nothing more, so the time left never grows while one runs long, and it reads at least
+// a minute while work is left. Nothing until two steps are timed, unless Claude gave every
+// step left its minutes.
 export function eta(goal, now) {
   const p = progress(goal)
-  if (goal.status !== 'running' || p.doneN < 2 || p.doneW <= 0 || p.doneW >= p.total) return null
-  const since = goal.planAt || goal.startedAt
-  const per = Math.max(0, now - since) / p.doneW
-  const ms = Math.round(per * (p.total - p.doneW))
+  if (goal.status !== 'running' || p.doneW >= p.total) return null
+  const tasks = live(goal)
+  const timed = tasks.filter((t) => t.status === 'done' && !t.untimed && t.doneAt > t.startedAt)
+  const w = timed.reduce((a, t) => a + weight(t), 0)
+  const pace = timed.length >= 2 && w ? timed.reduce((a, t) => a + t.doneAt - t.startedAt, 0) / w : 0
+  let ms = 0
+  for (const t of tasks) {
+    if (t.status === 'done') continue
+    const want = t.minutes ? t.minutes * 60000 : pace * weight(t)
+    if (!want) return null
+    ms += t.status === 'active' ? Math.max(0, want - Math.max(0, now - t.startedAt)) : want
+  }
+  ms = Math.max(60000, Math.round(ms))
   return { ms, at: now + ms }
+}
+
+// Minutes Claude expects a step to take: a number above 0, up to a day; 0 when not given
+function minutesOf(v) {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n * 10) / 10, 1440) : 0
 }
 
 // Accepts [{ title, size }], plain strings, or the same as a JSON string
@@ -106,12 +127,12 @@ export function normalizeTasks(raw) {
   for (const item of list) {
     if (typeof item === 'string') {
       const title = clean(item.replace(/^\s*[-*\d.)\]]+\s*/, ''), 140)
-      if (title) out.push({ title, size: 'M' })
+      if (title) out.push({ title, size: 'M', minutes: 0 })
       continue
     }
     if (!item || typeof item !== 'object') continue
     const title = clean(item.title ?? item.subject ?? item.name ?? item.task ?? item.description, 140)
-    if (title) out.push({ title, size: sizeOf(item.size) })
+    if (title) out.push({ title, size: sizeOf(item.size), minutes: minutesOf(item.minutes) })
   }
   return out.slice(0, 60)
 }
@@ -123,7 +144,7 @@ function idsOf(input) {
 
 function addTasks(goal, list, now, origin) {
   for (const t of list) {
-    goal.tasks.push({ id: goal.nextId++, title: t.title, size: t.size, status: 'pending', by: '', addedAt: now, startedAt: 0, doneAt: 0, origin, note: '' })
+    goal.tasks.push({ id: goal.nextId++, title: t.title, size: t.size, minutes: t.minutes || 0, status: 'pending', by: '', addedAt: now, startedAt: 0, doneAt: 0, origin, note: '' })
   }
 }
 
@@ -135,7 +156,8 @@ export function listText(goal) {
   for (const t of goal.tasks) {
     if (t.replaced) continue
     const who = t.status === 'active' && t.by ? ` by ${t.by}` : ''
-    lines.push(`#${t.id} ${WORD[t.status] || t.status}  ${t.title} (${t.size})${who}`)
+    const mins = t.minutes && t.status !== 'done' ? `, ~${t.minutes}m` : ''
+    lines.push(`#${t.id} ${WORD[t.status] || t.status}  ${t.title} (${t.size}${mins})${who}`)
   }
   return lines.join('\n')
 }
@@ -180,6 +202,8 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
         t.status = 'active'
         t.startedAt = t.startedAt || now
         if (by) t.by = clean(by, 32)
+        // how long it will take, given when it begins or again when that changes
+        if (minutesOf(input.minutes)) t.minutes = minutesOf(input.minutes)
       } else if (action === 'done') {
         // never started (marked done with others at the end, or skipped to): when it ran is not
         // known, so it shows no time rather than a made-up one
@@ -231,6 +255,7 @@ export const TOOL_SPEC = {
     'Call action "plan" first with every task needed to meet the goal, in order, each sized S, M, or L. ' +
     'Call "start" with a task id when you begin it (set "by" to a subagent\'s short name when one does it) and "done" when it is finished. ' +
     'Call "add" for work you discover or when the goal check says the goal is not met yet, and "drop" for a task no longer needed. ' +
+    'When you can tell how long a step will take (a build or test suite running in the background, say), give its "minutes"; call "start" with its id and new "minutes" when that changes. ' +
     'Keep it accurate: the bar and the ETA come only from this list.',
   inputSchema: {
     type: 'object',
@@ -245,6 +270,7 @@ export const TOOL_SPEC = {
           properties: {
             title: { type: 'string', description: 'What the task delivers, in a few words' },
             size: { type: 'string', enum: ['S', 'M', 'L'], description: 'S: a few minutes. M: a solid chunk. L: the big piece.' },
+            minutes: { type: 'number', description: 'Optional: how many minutes you expect the step to take, when you can tell' },
           },
           required: ['title'],
         },
@@ -252,6 +278,7 @@ export const TOOL_SPEC = {
       id: { type: 'number', description: 'For start, done, and drop: the task number' },
       ids: { type: 'array', items: { type: 'number' }, description: 'Several task numbers at once' },
       by: { type: 'string', description: 'For start: who does it, "main" or the subagent\'s short name' },
+      minutes: { type: 'number', description: 'For start: how many minutes you now expect the step to take' },
       note: { type: 'string', description: 'For done or drop: one short line' },
     },
     required: ['action'],
@@ -290,6 +317,7 @@ export function autoPlan(tool) {
     `The first step starts by itself. Call "done" with a step's id the moment it is finished, one step at a time, each as it happens, never several at the end: ` +
     `the next step then starts by itself. Call "start" only to take up a step out of order. "add" new steps you discover, ` +
     `"drop" ones no longer needed. A new, unrelated request gets a new "plan". ` +
+    `When you can tell how long a step will take (a build or test suite running in the background, say), give its "minutes", and call "start" with its id and new "minutes" when that changes: the time left on the row comes from it. ` +
     `List only steps you do yourself, never one that waits on the user (their reply, a screenshot, a check on their side). ` +
     `Before you end your turn, every step is done or dropped, unless background work you started is still carrying it. ` +
     `Skip all of this for quick answers, single lookups and one-step edits.`
