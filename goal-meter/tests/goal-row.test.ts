@@ -26,6 +26,12 @@ const svgsIn = (n: unknown): Node[] => {
   const node = n as Node
   return [...(node.type === 'Svg' ? [node] : []), ...(node.children ?? []).flatMap(svgsIn)]
 }
+// A stand-in for grep over a chat's log: the lines holding the pattern (argv: grep -m 3 -F <pattern> <path>)
+const grepLog = (log: () => string) => (_$: unknown, e: unknown) => {
+  const argv = (e as { argv: string[] }).argv
+  const pattern = argv[argv.length - 2]!
+  return { value: { stdout: log().split('\n').filter((l) => l.includes(pattern)).join('\n'), stderr: '', exitCode: 0 } }
+}
 const rowImgs = async (ui: { find: (q: object) => Promise<unknown> }) => svgsIn(await ui.find({ type: 'Box', key: 'goal-row' }))
 
 test('a chat that has done nothing has no row at all, and never a /goal hint or 空闲', async ($, on) => {
@@ -1100,10 +1106,9 @@ test('background work still inside the step that started it is set under that st
   on('classic.Stop', () => ({}))
   // the chat's log: a test run launched in the background before an update reloaded the mod
   let log = ''
-  on('fs.read', (_$, e) => {
-    if (String((e as { path: string }).path).endsWith('chat.jsonl')) return { value: log }
-    throw new Error('no such file')
-  })
+  // read with grep, never whole: logs pass $.fs.read's 4 MiB cap (neo-mate's was 7 MB)
+  on('fs.read', () => { throw new Error('no such file') })
+  on('process.run', grepLog(() => log))
   const clock = mock.clock(on)
   const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
   const view = async () => {
@@ -1192,9 +1197,9 @@ test('after a reload the background work in the plan\'s file still counts: the s
   on('fs.read', (_$, e) => {
     const path = String((e as { path: string }).path)
     if (path.endsWith('s1.json')) return { value: JSON.stringify(file) }
-    if (path.endsWith('.jsonl')) return { value: log }
     throw new Error('no such file ' + path)
   })
+  on('process.run', grepLog(() => log))
   await $.session.start({ cwd: '/Users/me/neo-mate', source: 'resume' } as never)
   const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
   const card = String((await rowImgs(ui)).at(-1)!.props!.source)

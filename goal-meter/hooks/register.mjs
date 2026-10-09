@@ -121,11 +121,9 @@ async function restore($) {
   // background work read ⏸ and its clocks stood still (neo-mate, 2026-10-09). Take the count from the
   // plan's file, and put right from the log whatever was filed before its start was known.
   if (G && G.status === 'running' && Array.isArray(G.bg) && G.bg.some((b) => b.status === 'running')) {
-    let log = ''
-    try { log = transcriptPath ? await $.fs.read(transcriptPath) : '' } catch {}
     for (const b of G.bg) {
       if (b.status !== 'running' || bgSeen.has(b.id)) continue
-      const at = launchInLog(log, b.id)
+      const at = await launchAt($, b.id)
       if (at) bgSeen.set(b.id, { at, step: stepAt(G, at) })
     }
     placeBackground(G, bgSeen)
@@ -253,6 +251,24 @@ async function serveTool($, e) {
     $.ui.invalidate('ui.render')
   }
   return { result: text }
+}
+
+// When a background task was launched: the one line of the chat's log that names its id, found with
+// grep (logs reach 200 MB, and $.fs.read refuses anything over 4 MiB: neo-mate's 7 MB log read
+// nothing, 2026-10-09); 0 when the log does not have it
+async function launchAt($, id) {
+  const path = transcriptPath
+  if (!path || !/^[A-Za-z0-9_-]+$/.test(id)) return 0
+  const windows = /^[A-Za-z]:/.test(path)
+  const argv = windows
+    ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `Select-String -LiteralPath '${path.replace(/'/g, "''")}' -SimpleMatch -Pattern 'ID: ${id}' | Select-Object -First 3 | ForEach-Object { $_.Line }`]
+    : ['grep', '-m', '3', '-F', `ID: ${id}`, path]
+  try {
+    const r = await $.process.run(argv, { timeoutMs: 15000 })
+    return launchInLog(r.stdout || '', id)
+  } catch {
+    return 0
+  }
 }
 
 // The goal check's verdict. Its row reaches session.append with no content (the
@@ -430,7 +446,6 @@ export function register(on) {
     // when each task started and under which step: the background tool call that launched it (the
     // same command, else the same description); for one launched before this process loaded (an
     // update reloads the mod), the log's tool result that names its id; else unknown
-    let log = null
     for (const b of list) {
       const id = String(b.id)
       if (bgSeen.has(id)) continue
@@ -441,10 +456,7 @@ export function register(on) {
         bgLaunches.splice(i, 1)
         continue
       }
-      if (log === null) {
-        try { log = transcriptPath ? await $.fs.read(transcriptPath) : '' } catch { log = '' }
-      }
-      const from = launchInLog(log, id)
+      const from = await launchAt($, id)
       bgSeen.set(id, from ? { at: from, step: G ? stepAt(G, from) : 0 } : { at, step: 0, unknown: true })
     }
     // a running plan counts only the work it started; that work shows on its row and card as steps
