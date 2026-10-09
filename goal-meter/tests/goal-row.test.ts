@@ -127,7 +127,7 @@ test('a running plan is one row: the whole title, a band-length bar, done of tot
   const spans = rowSpans(r!, 120)
   expect(spans.map(s => s.text).join('')).toBe('◎ 测试全绿并提交  ■■■■■■■■■■  2/4 · 50% · 剩约 8m')
   // a long title is kept far longer than before (16 with a step name beside it)
-  expect(rowOf(goal({ title: '核对 10-05 的数据丢失，并找出删文件的那条路径' }), prog, 0)!.title).toBe('核对 10-05 的数据丢失，并找出删文件的那条路径')
+  expect(rowOf(goal({ title: '核对 03-12 的报表数据，并找出出错的那一处地方' }), prog, 0)!.title).toBe('核对 03-12 的报表数据，并找出出错的那一处地方')
 })
 
 test('task sizes (S, M, L) never reach the row', async () => {
@@ -224,7 +224,7 @@ test('on the desktop the card sits centred over a row of any width, and every im
 })
 
 test('a long step name stops well short of its time', () => {
-  const long = '读现有费率模型、资金账算法和记分牌复现路径并核对每一处口径'
+  const long = '读现有排序模型、缓存层算法和报表页生成路径并核对每一处细节'
   const card = stepsSvg([{ status: 'active', title: long, tail: '1m 00s' }])
   const title = card.svg.match(new RegExp(`x="${CARD.pad + 18}"[^>]*>([^<]*)<`))![1]!
   expect(title.endsWith('…')).toBe(true)
@@ -235,8 +235,8 @@ test('a long step name stops well short of its time', () => {
 })
 
 test('every long name is cut at the same place, with or without a time, leaving the time its room', () => {
-  // Neo's step from the jingshui chat (2026-10-07) that ran to the card's edge with no time beside it
-  const long = '写阶梯费率模型 + 盈透券商模型 + 现金账户并编译'
+  // a real step from another chat (2026-10-07) that ran to the card's edge with no time beside it
+  const long = '写分层缓存模型 + 本地队列模型 + 重试逻辑并编译'
   const tx = CARD.pad + 18
   const titleOf = (svg: string) => svg.match(new RegExp(`x="${tx}"[^>]*>([^<]*)<`))![1]!
   const bare = titleOf(stepsSvg([{ status: 'pending', title: long, tail: '' }]).svg)
@@ -453,7 +453,7 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   v = await view()
   expect(v.tails).toEqual(['10s', '10s', '38s']) // 丙 stands where the work stopped
   expect(v.row).not.toContain('剩约')
-  // the turn stopped with nothing running: the step it is on reads paused (the jingshui chat, 2026-10-07 16:12)
+  // the turn stopped with nothing running: the step it is on reads paused (a real chat, 2026-10-07 16:12)
   expect(v.mark).toBe('⏸')
   // taking up 丁 out of order puts 丙 back (it had only started by itself); 丁's clock stops with the work
   await $.turn.start({ text: '继续', turnId: 't3' })
@@ -501,12 +501,12 @@ test('the time left counts down while a step runs, and a late step is not taken 
     await ui.unmount()
     return (alt.match(/剩约 (\S+)/) || [])[1]
   }
-  // the neo-fitness plan of 2026-10-07 08:52, at its own times: the old estimate read 6m with
+  // a real plan of 2026-10-07 08:52, at its own times: the old estimate read 6m with
   // the gate 35s in, 11m at 7m 58s
   const run = async (minutes: number) => {
     await clock.advance(60000)
     await $.turn.start({ text: '做', turnId: 't' + minutes })
-    await tasks('plan', { goal: '倾斜提示 + 完整门禁', tasks: [{ title: '读', size: 'S' }, { title: '定', size: 'M' }, { title: '写', size: 'M' }, { title: '测', size: 'M' }, { title: '门禁', size: 'L' }, { title: '汇报', size: 'S' }] })
+    await tasks('plan', { goal: '加载提示 + 完整测试', tasks: [{ title: '读', size: 'S' }, { title: '定', size: 'M' }, { title: '写', size: 'M' }, { title: '测', size: 'M' }, { title: '门禁', size: 'L' }, { title: '汇报', size: 'S' }] })
     for (const [id, ms] of [[1, 40000], [2, 324000], [3, 28000], [4, 239000]]) { await clock.advance(ms); await tasks('done', { id }) }
     if (minutes) await tasks('start', { id: 5, minutes })
     await clock.advance(35000)
@@ -531,12 +531,12 @@ test('Claude\'s own minutes for a step are what the time left counts down from',
     await ui.unmount()
     return (alt.match(/剩约 (\S+)/) || [])[1]
   }
-  // the neo-fitness plan of 2026-10-07 08:52, at its own times: the old estimate read 6m with
+  // a real plan of 2026-10-07 08:52, at its own times: the old estimate read 6m with
   // the gate 35s in, 11m at 7m 58s
   const run = async (minutes: number) => {
     await clock.advance(60000)
     await $.turn.start({ text: '做', turnId: 't' + minutes })
-    await tasks('plan', { goal: '倾斜提示 + 完整门禁', tasks: [{ title: '读', size: 'S' }, { title: '定', size: 'M' }, { title: '写', size: 'M' }, { title: '测', size: 'M' }, { title: '门禁', size: 'L' }, { title: '汇报', size: 'S' }] })
+    await tasks('plan', { goal: '加载提示 + 完整测试', tasks: [{ title: '读', size: 'S' }, { title: '定', size: 'M' }, { title: '写', size: 'M' }, { title: '测', size: 'M' }, { title: '门禁', size: 'L' }, { title: '汇报', size: 'S' }] })
     for (const [id, ms] of [[1, 40000], [2, 324000], [3, 28000], [4, 239000]]) { await clock.advance(ms); await tasks('done', { id }) }
     if (minutes) await tasks('start', { id: 5, minutes })
     await clock.advance(35000)
@@ -560,11 +560,11 @@ test('every step\'s minutes from Claude, scaled by how its estimates held up in 
     await ui.unmount()
     return (alt.match(/剩约 (\S+)/) || [])[1]
   }
-  // the neo-fitness plan's real times; the minutes are made up (that chat gave none)
+  // a real plan's times; the minutes are made up (that chat gave none)
   const run = async (mins: number[]) => {
     await clock.advance(60000)
     await $.turn.start({ text: '做', turnId: 't' })
-    await tasks('plan', { goal: '倾斜提示 + 完整门禁', tasks: ['读', '定', '写', '测', '门禁', '汇报'].map((title, i) => ({ title, size: 'SMMMLS'[i], minutes: mins[i] })) })
+    await tasks('plan', { goal: '加载提示 + 完整测试', tasks: ['读', '定', '写', '测', '门禁', '汇报'].map((title, i) => ({ title, size: 'SMMMLS'[i], minutes: mins[i] })) })
     for (const [id, ms] of [[1, 40000], [2, 324000], [3, 28000], [4, 239000]]) { await clock.advance(ms); await tasks('done', { id }) }
     await clock.advance(35000)
     const a = await left()
@@ -602,15 +602,15 @@ test('a step marked done while the next in the list had started by itself gets t
   const T = (hms: string) => Date.parse('2026-10-08T' + hms + 'Z')
   let at = T('08:22:00')
   const to = async (hms: string) => { await clock.advance(T(hms) - at); at = T(hms) }
-  // the neo-mate plan of 2026-10-08, at its own times
+  // a real plan of 2026-10-08, at its own times
   await clock.advance(at)
   await $.turn.start({ text: '做', turnId: 't' })
   await to('08:22:19')
-  await tasks('plan', { goal: '补审 Twenty + 单聊增量更新', tasks: [{ title: '读源码', size: 'M' }, { title: '缩减', size: 'M' }, { title: '40 次对照', size: 'L' }, { title: '收消息', size: 'L' }, { title: '全量门禁', size: 'M' }] })
+  await tasks('plan', { goal: '补审 Vitest + 列表增量更新', tasks: [{ title: '读源码', size: 'M' }, { title: '缩减', size: 'M' }, { title: '40 次对照', size: 'L' }, { title: '收消息', size: 'L' }, { title: '全量门禁', size: 'M' }] })
   await to('08:23:19'); await tasks('done', { id: 1 })
   await to('08:25:31'); await tasks('done', { id: 2 })
   await to('08:32:46'); await tasks('done', { id: 4 }) // while #3 (started by itself) ran in the background
-  await to('08:36:52'); await tasks('add', { tasks: [{ title: '群名对 ID', size: 'S' }, { title: '群消息归档', size: 'M' }, { title: '设置页', size: 'M' }] })
+  await to('08:36:52'); await tasks('add', { tasks: [{ title: '用户对 ID', size: 'S' }, { title: '旧日志归档', size: 'M' }, { title: '设置页', size: 'M' }] })
   await to('08:37:08'); await tasks('done', { ids: [3, 6] })
   await to('08:41:11'); await tasks('done', { id: 7 }) // done before #5, which the list put next
   await to('08:43:44'); await tasks('done', { id: 8 })
@@ -670,7 +670,7 @@ test('a long step is asked how much longer a quarter of the way in, again after 
   await min(0.75)
   expect(await bash()).toContain('has run 3 of the 10 minutes it was given')
   expect(await bash()).not.toContain('progress row') // asked once
-  // Neo's example: it will take 20 in all, so 17 more: asked again a quarter of 17 later
+  // the owner's example: it will take 20 in all, so 17 more: asked again a quarter of 17 later
   await tasks('start', { id: 1, minutes: 17 })
   await min(4)
   expect(await bash()).not.toContain('progress row')
@@ -854,12 +854,12 @@ test('every step done but a background task still running: not finished until it
     await ui.unmount()
     return alt
   }
-  // what the neo-mate chat did (2026-10-07 11:57): launch the Codex build in the background,
+  // what a real chat did (2026-10-07 11:57): launch the Codex build in the background,
   // mark the last step done, end the turn
   const stop = (bg: number) => $.classic.Stop({ stop_hook_active: false, background_tasks: Array.from({ length: bg }, (_, i) => ({ id: 'b' + i, type: 'shell', status: 'running', description: 'Codex stage 3' })) } as never)
   await clock.advance(60000)
   await $.turn.start({ text: '派给 Codex', turnId: 't1' })
-  await tasks('plan', { goal: '事项合并派给 Codex', tasks: [{ title: '写目标书' }, { title: '发车 stage 3' }] })
+  await tasks('plan', { goal: '功能合并派给 Codex', tasks: [{ title: '写目标书' }, { title: '发车 stage 3' }] })
   await clock.advance(30000)
   await tasks('done', { id: 1 })
   await tasks('done', { id: 2 })
