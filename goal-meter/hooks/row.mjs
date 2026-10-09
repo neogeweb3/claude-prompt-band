@@ -272,10 +272,9 @@ export function fitRow(r, room = ROW_ROOM) {
   return rowSvg({ ...r, title })
 }
 
-// The right end's area, LINE.others wide whatever it says, its text set flush right:
+// The right end's area, `width` wide whatever it says, its text set flush right:
 // "其他对话 N | M 在跑", with a stack of two cards for its icon; blank with no other chat
-export function othersSvg(n, running) {
-  const width = LINE.others
+export function othersSvg(n, running, width = LINE.others) {
   const parts = []
   if (n) {
     const label = `其他对话 ${n}`

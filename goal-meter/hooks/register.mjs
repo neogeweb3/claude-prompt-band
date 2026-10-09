@@ -776,13 +776,24 @@ function drawRow(el, e) {
         mine.push(pop(card, steps.map((t) => t.title).join(', ')))
       }
       const rest = others.filter((g) => g.sessionId !== sessionId)
-      const area = othersSvg(rest.length, rest.filter((g) => g.status === 'running').length)
-      const right = [el.Svg({ source: area.svg, alt: rest.length ? `其他对话 ${rest.length}` : '没有其他对话', width: area.width, height: area.height })]
+      // A blank image as wide as the line holds its place; the row and the other chats' area are
+      // laid over it, flush with its two ends (left: 0 and right: 0 are exact; Box sizes and margins
+      // are in ch, so they cannot place anything to the pixel)
+      const line = [el.Svg({ source: othersSvg(0, 0, LINE.w).svg, alt: '·', width: LINE.w, height: fitted.height })]
       if (rest.length) {
+        // The area is a frame wide, so its card, hung from the area's left edge, ends at the line's
+        // right end instead of past it (Neo, 2026-10-09: 别伸出行外); its text keeps the right end.
+        // It comes before the row: the row, drawn later, lies over the area's blank left part, and
+        // the pointer there still pops the row's own steps
+        const area = othersSvg(rest.length, rest.filter((g) => g.status === 'running').length, FRAME.w)
         const items = rest.slice(0, OTHERS_CARD).map(otherItem)
-        right.push(pop(othersCardSvg(items), items.map((it) => `${it.name}: ${it.title}`).join(', ')))
+        line.push(el.Box({ key: 'goal-others', position: 'absolute', top: 0, right: 0, children: [
+          el.Svg({ source: area.svg, alt: `其他对话 ${rest.length}`, width: area.width, height: area.height }),
+          pop(othersCardSvg(items), items.map((it) => `${it.name}: ${it.title}`).join(', ')),
+        ] }))
       }
-      return centred([el.Box({ key: 'goal-row', children: mine }), el.Box({ key: 'goal-others', children: right })])
+      line.push(el.Box({ key: 'goal-row', position: 'absolute', top: 0, left: 0, children: mine }))
+      return centred([el.Box({ children: line })])
     }
     // Mobile keeps the one centred row: the steps card centred over it
     if (!steps.length) return centred([el.Svg({ source: row.svg, alt, width: row.width, height: row.height })])

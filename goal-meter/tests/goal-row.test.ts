@@ -210,19 +210,18 @@ test('on the desktop the line is one fixed width whatever the row says, a long t
     const imgs = await ui.findAll({ type: 'Svg' })
     expect(alts(imgs)).toBe(true)
     const row = (await rowImgs(ui))[0]!
-    const area = svgsIn(await ui.find({ type: 'Box', key: 'goal-others' }))[0]!
-    // the row's share and the right end's area: the line is LINE.w wide, short title or long
+    // a blank image holds the line's width, short title or long; the row is laid over its left end
+    expect(imgs[0]!.props.width).toBe(LINE.w)
     expect(row.props!.width).toBe(LINE.w - LINE.others)
-    expect(area.props!.width).toBe(LINE.others)
+    expect(JSON.stringify(await ui.find({ type: 'Box', key: 'goal-row' }))).toContain('"left":0')
     // what is drawn of the row stays within its room; a long title gives way, cut with …
     const drawn = rowSvg({ state: 'running', title, fraction: 0, figure: '0/2 · 0%', detail: '' }).width
     if (title === long) {
       expect(drawn).toBeGreaterThan(ROW_ROOM)
       expect(String(row.props!.source)).toContain('…')
     } else expect(String(row.props!.source)).not.toContain('…')
-    // alone, the right end is blank and pops nothing
-    expect(String(area.props!.alt)).toBe('没有其他对话')
-    expect(JSON.stringify(await ui.find({ type: 'Box', key: 'goal-others' }))).not.toContain('"display":"none"')
+    // alone, there is no other chats' area and nothing else pops
+    expect(await ui.find({ type: 'Box', key: 'goal-others' })).toBeUndefined()
     await ui.unmount()
   }
 })
@@ -344,7 +343,7 @@ test('a finished plan celebrates only in the first seconds after it ends', async
   const clock = mock.clock(on)
   const svg = async () => {
     const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
-    const s = String((await ui.find({ type: 'Svg' }))!.props.source)
+    const s = String((await rowImgs(ui))[0]!.props!.source)
     await ui.unmount()
     return s
   }
@@ -1000,6 +999,14 @@ test('on the desktop, other chats show as a small area after the row, its own ca
   expect(inArea).toContain('剩约')
   expect(inArea).toContain('完成 ✓')
   expect(inArea).toContain('"display":"none"')
+  // the area is a frame wide and flush with the line's right end, so its card, hung from the area's
+  // left edge, ends at the line's right end (別伸出行外); it comes first, the row over its blank part
+  expect((area as Node).props!.right).toBe(0)
+  expect(svgsIn(area)[0]!.props!.width).toBe(FRAME.w)
+  const line = (await ui.findAll({ type: 'Svg' }))[0]!
+  expect(line.props.width).toBe(LINE.w)
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn.indexOf('goal-others')).toBeLessThan(drawn.indexOf('goal-row'))
   // the row keeps its own card, and only its own
   const row = JSON.stringify(await ui.find({ type: 'Box', key: 'goal-row' }))
   expect(row).toContain('改样式')
