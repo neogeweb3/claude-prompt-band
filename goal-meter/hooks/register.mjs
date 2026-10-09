@@ -395,14 +395,17 @@ export function register(on) {
     // step being worked on keeps its clock until they wake the next turn
     const list = e && Array.isArray(e.background_tasks) ? e.background_tasks : []
     const at = await $.clock.now()
-    // when each task started: the background tool call that launched it (the same command, else the
-    // same description), else now, the first time a turn left it running
+    // when each task started and under which step: the background tool call that launched it (the
+    // same command, else the same description), else now, the first time a turn left it running
     for (const b of list) {
       const id = String(b.id)
       if (bgSeen.has(id)) continue
       const cmd = String(b.command || '').slice(0, 200)
       const i = bgLaunches.findIndex((l) => (cmd && l.command.slice(0, 200) === cmd) || (!cmd && l.description && l.description === String(b.description || '')))
-      bgSeen.set(id, i >= 0 ? { at: bgLaunches[i].at, step: bgLaunches[i].step } : { at, step: 0 })
+      // no launch on record (it began before this process loaded, e.g. across an update): it belongs
+      // to the step running now, if any
+      const active = G && G.status === 'running' ? (G.tasks.find((t) => t.status === 'active' && !t.replaced) || {}).id || 0 : 0
+      bgSeen.set(id, i >= 0 ? { at: bgLaunches[i].at, step: bgLaunches[i].step } : { at, step: active })
       if (i >= 0) bgLaunches.splice(i, 1)
     }
     // a running plan counts only the work it started; that work shows on its row and card as steps

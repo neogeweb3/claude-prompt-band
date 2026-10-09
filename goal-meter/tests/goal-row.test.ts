@@ -445,8 +445,8 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
   await clock.advance(33000)
   let v = await view()
-  // the background task is the plan's own work, listed after its steps with its clock
-  expect(v.tails).toEqual(['10s', '10s', '38s', '33s'])
+  // the background task is 丙's, still running under it: no row of its own
+  expect(v.tails).toEqual(['10s', '10s', '38s'])
   expect(v.row).toContain('剩约')
   expect(v.mark).toBe('▶') // the background task is still at it
   // the background task woke a turn that ended with nothing left running: the work waits on the person
@@ -455,7 +455,7 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
   await clock.advance(60000)
   v = await view()
-  expect(v.tails).toEqual(['10s', '10s', '38s', '33s']) // 丙 stands where the work stopped; the background task ran 33s
+  expect(v.tails).toEqual(['10s', '10s', '38s']) // 丙 stands where the work stopped
   expect(v.row).not.toContain('剩约')
   // the turn stopped with nothing running: the step it is on reads paused (a real chat, 2026-10-07 16:12)
   expect(v.mark).toBe('⏸')
@@ -468,7 +468,7 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't3' })
   await clock.advance(120000)
   v = await view()
-  expect(v.tails).toEqual(['10s', '10s', '7s', '33s'])
+  expect(v.tails).toEqual(['10s', '10s', '7s'])
   expect(v.mark).toBe('⏸')
 })
 
@@ -1115,13 +1115,22 @@ test('background work still inside the step that started it is that step\'s, not
   // the step's ▶ and clock already stand for the review: 1/3, no extra row
   expect(v.row).toContain('1/3')
   expect(v.card).not.toContain('后台 ·')
+  // a task with no launch on record (it began before an update reloaded the mod) seen while the
+  // step runs is the step's too
+  await clock.advance(10000)
+  await $.turn.start({ text: '', turnId: 't1b' })
+  await stop([review, { id: 'cx2', type: 'shell', status: 'running', description: '更新前起的', command: 'codex exec again' }])
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1b' })
+  v = await view()
+  expect(v.row).toContain('1/3')
+  expect(v.card).not.toContain('后台 ·')
   // the step is marked done while the review still runs: now it is work of its own
   await clock.advance(60000)
   await $.turn.start({ text: '', turnId: 't2' })
   await tasks('done', { id: 2 })
-  await stop([review])
+  await stop([review, { id: 'cx2', type: 'shell', status: 'running', description: '更新前起的', command: 'codex exec again' }])
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
   v = await view()
-  expect(v.row).toContain('2/4')
+  expect(v.row).toContain('2/5')
   expect(v.card).toContain('后台 · Codex 外审')
 })
