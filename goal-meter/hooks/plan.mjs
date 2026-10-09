@@ -272,7 +272,7 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
     if (action === 'done') {
       // A step marked done that never started, while the next one in the list started by itself:
       // that time was this step's, not the next one's (Claude did steps it added at the end before
-      // the one the list put next: the neo-mate gate, 2026-10-08, ran its clock half an hour over
+      // the one the list put next: a real gate, 2026-10-08, ran its clock half an hour over
       // two other steps, which then read "—"). Only for a single step: a batch marked at the end
       // says nothing about when each ran.
       const auto = goal.tasks.find((t) => t.auto && t.status === 'active' && !ids.includes(t.id))
@@ -431,7 +431,7 @@ export function earlyNudge(tool, t, now) {
 }
 
 // Said once when the running step has gone past the time it was given: only Claude knows how much
-// longer it has (the neo-mate chat, 2026-10-08, knew it was "watching 15 more minutes")
+// longer it has (a real chat, 2026-10-08, knew it was "watching 15 more minutes")
 export function lateNudge(tool, t) {
   return (
     `Step #${t.id} "${t.title}" of the progress row has run past the time it was given. ` +
