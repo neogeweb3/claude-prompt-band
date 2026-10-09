@@ -115,21 +115,12 @@ export function foldBackground(goal, list, seen, now) {
   const bg = Array.isArray(goal.bg) ? goal.bg : (goal.bg = [])
   for (const b of list) {
     const id = String(b.id)
-    const known = bg.find((x) => x.id === id)
-    if (known) {
-      // filed before its start was on record (1.8.22 took a server from an earlier plan for new
-      // across an update): what the log says now puts it right
-      const from = seen.get(id)
-      if (from && !from.unknown && !known.outside) {
-        known.startedAt = from.at
-        if (from.at < goal.startedAt) { known.outside = true; delete known.own }
-      }
-      continue
-    }
+    if (bg.some((x) => x.id === id)) continue
     const from = seen.get(id) || { at: now, step: 0, unknown: true }
     const outside = !!from.unknown || from.at < goal.startedAt
     bg.push({ id, title: String(b.description || b.command || b.type || '后台任务').replace(/\s+/g, ' ').trim().slice(0, 80), kind: String(b.type || ''), status: 'running', startedAt: from.unknown ? 0 : from.at, step: from.step || 0, ...(outside ? { outside: true } : {}) })
   }
+  placeBackground(goal, seen)
   for (const x of bg) {
     if (x.status !== 'running') continue
     if (!running.has(x.id)) { Object.assign(x, { status: 'done', doneAt: now }); continue }
@@ -139,6 +130,21 @@ export function foldBackground(goal, list, seen, now) {
   }
   return bg.filter((x) => x.status === 'running' && !x.outside).length
 }
+
+// Tasks filed before their start was on record (1.8.22 took a server from an earlier plan for new
+// across an update) put right from what `seen` now says (the log): their real start, and outside
+// the plan if that was before it began
+export function placeBackground(goal, seen) {
+  for (const x of Array.isArray(goal.bg) ? goal.bg : []) {
+    const from = seen.get(x.id)
+    if (x.status !== 'running' || x.outside || !from || from.unknown) continue
+    x.startedAt = from.at
+    if (from.at < goal.startedAt) { x.outside = true; delete x.own }
+  }
+}
+
+// How many of the plan's own background tasks still run, as last seen
+export const planRunning = (goal) => (Array.isArray(goal.bg) ? goal.bg : []).filter((x) => x.status === 'running' && !x.outside).length
 
 // The step of the plan running at time `at`, or 0
 export function stepAt(goal, at) {

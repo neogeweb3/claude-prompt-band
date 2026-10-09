@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, shown, ownWork, foldBackground, stepAt, launchInLog, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, launchInLog, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -115,6 +115,21 @@ async function restore($) {
     if (saved && Array.isArray(saved.tasks) && now - (saved.updatedAt || 0) < 24 * 3600000) G = saved
   } catch {
     G = null
+  }
+  // A reload (an update does one) starts the module's own values over, the count of background work
+  // with them, and the next count comes only when a turn stops: until then a plan whose step waits on
+  // background work read ⏸ and its clocks stood still (neo-mate, 2026-10-09). Take the count from the
+  // plan's file, and put right from the log whatever was filed before its start was known.
+  if (G && G.status === 'running' && Array.isArray(G.bg) && G.bg.some((b) => b.status === 'running')) {
+    let log = ''
+    try { log = transcriptPath ? await $.fs.read(transcriptPath) : '' } catch {}
+    for (const b of G.bg) {
+      if (b.status !== 'running' || bgSeen.has(b.id)) continue
+      const at = launchInLog(log, b.id)
+      if (at) bgSeen.set(b.id, { at, step: stepAt(G, at) })
+    }
+    placeBackground(G, bgSeen)
+    background = planRunning(G)
   }
 }
 
@@ -330,7 +345,8 @@ export function register(on) {
     $.clock.every(10000, () => readRecording($).catch(() => {}))
     // a step's clock counts by the second, as the background-task panel's does
     $.clock.every(1000, async () => {
-      if (!busy(G)) return
+      // background work listed in the card counts by the second too, the plan's or not
+      if (!busy(G) && !(G && G.status === 'running' && (G.bg || []).some((b) => b.status === 'running'))) return
       now = await $.clock.now()
       $.ui.invalidate('ui.render')
     })

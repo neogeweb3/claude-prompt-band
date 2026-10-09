@@ -1161,3 +1161,50 @@ test('a background task filed under the plan before its start was known is put r
   expect(shown(g).doneN + '/' + shown(g).n).toBe('2/2')
 })
 
+
+test('after a reload the background work in the plan\'s file still counts: the step keeps ▶ and every clock runs', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  const clock = mock.clock(on)
+  await clock.advance(10 * 60000)
+  const t0 = 2 * 60000
+  // neo-mate's plan file when 1.8.23 loaded (2026-10-09): step 2 running, its Codex job and a server
+  // from an earlier plan both filed under it, both still running
+  const g = newGoal({ sessionId: 's1', condition: '事项弹窗改造', now: t0, cwd: '/Users/me/neo-mate' })
+  applyAction(g, { action: 'plan', tasks: [{ title: '写任务书', minutes: 1 }, { title: 'Codex 写代码并评审', minutes: 60 }, { title: '跑门禁', minutes: 10 }] }, { now: t0 })
+  applyAction(g, { action: 'done', id: 1 }, { now: t0 + 2000 })
+  // as in the real file: the turn had ended (active false), Claude waiting on the background work
+  const file = { ...g, active: false, lastTurnEnd: t0 + 60000, updatedAt: t0 + 60000, bg: [
+    { id: 'bee614n66', title: '用临时假数据库在 57611 端口起工作台', status: 'running', startedAt: t0 + 60000, step: 2 },
+    { id: 'b3hydmlpi', title: '派 Codex 实现事项弹窗', status: 'running', startedAt: t0 + 60000, step: 2 },
+  ] }
+  const tr = (id: string, at: number) => JSON.stringify({ type: 'user', timestamp: new Date(at).toISOString(), message: { content: [{ type: 'tool_result', content: `Command running in background with ID: ${id}. Output …` }] } })
+  const log = [tr('bee614n66', 30000), tr('b3hydmlpi', t0 + 3000)].join('\n')
+  on('env.get', (_$, e) => ({ value: (e as { name: string }).name === 'HOME' ? '/home/me' : undefined }))
+  on('session.start', (_$, e) => ({ ...(e as object) }))
+  on('session.id', () => ({ value: 's1' }))
+  on('session.cwd', () => ({ value: '/Users/me/neo-mate' }))
+  on('store.get', () => ({ value: undefined }))
+  on('tool.register', () => ({ value: { tool: 'mcp__goal-meter__tasks' } }))
+  on('command.register', () => ({ value: undefined }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.list', () => ({ value: [] }))
+  on('fs.read', (_$, e) => {
+    const path = String((e as { path: string }).path)
+    if (path.endsWith('s1.json')) return { value: JSON.stringify(file) }
+    if (path.endsWith('.jsonl')) return { value: log }
+    throw new Error('no such file ' + path)
+  })
+  await $.session.start({ cwd: '/Users/me/neo-mate', source: 'resume' } as never)
+  const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+  const card = String((await rowImgs(ui)).at(-1)!.props!.source)
+  await ui.unmount()
+  // the Codex job counts again: step 2 reads ▶, not ⏸
+  expect(card).toContain('▶')
+  expect(card).not.toContain('⏸')
+  // the server, launched before the plan (the log says so), is put outside it
+  expect(card).toContain('计划外 · 用临时假数据库')
+  expect(card).toContain('↳')
+  // and the Codex job's clock runs from its real launch: 10m − 2m − 3s = 7m 57s
+  expect(card).toContain('7m 57s')
+})
