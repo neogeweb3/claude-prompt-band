@@ -234,10 +234,10 @@ export function stepsSvg(steps) {
   const defs = []
   const rows = steps.map((s, i) => {
     const y = STEP.top + i * STEP.h + 15
-    const hue = s.status === 'done' ? HUE.done : null
+    const hue = s.status === 'done' && !s.sub ? HUE.done : null // background work under a step stays muted, ✓ or ↳
     // background work running inside a step sits under it, set in, ↳ and muted; work outside the
     // plan is muted too
-    const mark = s.sub ? '↳' : MARK[s.status] || '○'
+    const mark = s.sub ? (s.status === 'done' ? '✓' : '↳') : MARK[s.status] || '○'
     const quiet = s.sub || s.status === 'outside'
     const on = !quiet && (s.status === 'active' || s.status === 'paused')
     const tail = s.tail ? s.tail : ''

@@ -155,6 +155,21 @@ export function placeBackground(goal, seen) {
 // How many of the plan's own background tasks still run, as last seen
 export const planRunning = (goal) => (Array.isArray(goal.bg) ? goal.bg : []).filter((x) => x.status === 'running' && !x.outside).length
 
+// The step a finished background task ran under: the one its run overlapped most (a run launched a few
+// seconds before Claude moved to the next step, or ending a few seconds after, belongs where it spent
+// its time; neo-mate 2026-10-09: a unit-test run began 3s before step 5 and ran 26m in it); 0 if none
+export function mainStep(goal, b, now) {
+  let best = 0
+  let most = 0
+  for (const t of goal.tasks) {
+    if (t.replaced || !t.startedAt) continue
+    const end = t.doneAt || now
+    const overlap = Math.min(b.doneAt || now, end) - Math.max(b.startedAt, t.startedAt)
+    if (overlap > most) { most = overlap; best = t.id }
+  }
+  return best
+}
+
 // The step of the plan running at time `at`, or 0
 export function stepAt(goal, at) {
   const t = goal.tasks.find((x) => !x.replaced && x.startedAt && x.startedAt <= at && (x.status === 'active' || (x.doneAt && at < x.doneAt)))

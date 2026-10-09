@@ -463,7 +463,7 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
   await clock.advance(60000)
   v = await view()
-  expect(v.tails).toEqual(['10s', '10s', '38s']) // 丙 stands where the work stopped
+  expect(v.tails).toEqual(['10s', '10s', '38s', '33s']) // 丙 stands where the work stopped; its background run, ended, stays listed under it (✓ 33s)
   expect(v.row).not.toContain('剩约')
   // the turn stopped with nothing running: the step it is on reads paused (a real chat, 2026-10-07 16:12)
   expect(v.mark).toBe('⏸')
@@ -1235,4 +1235,60 @@ test('after a reload the background work in the plan\'s file still counts: the s
   expect(card).toContain('↳')
   // and the Codex job's clock runs from its real launch: 10m − 2m − 3s = 7m 57s
   expect(card).toContain('7m 57s')
+})
+
+test('the running step lists the background work that ended in it too, so its time adds up', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const sec = (n: number) => clock.advance(n * 1000)
+  const launch = (id: string, description: string) => $.tool.call({ tool: 'Bash', command: 'run ' + id, description, run_in_background: true } as never)
+  const job = (id: string, description: string) => ({ id, type: 'shell', status: 'running', description, command: 'run ' + id })
+  const turn = async (n: string, running: object[], act: () => Promise<unknown> = async () => {}) => {
+    await $.turn.start({ text: '', turnId: n })
+    await act()
+    await $.classic.Stop({ stop_hook_active: false, background_tasks: running } as never)
+    await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: n })
+  }
+  const card = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const src = String((await rowImgs(ui)).at(-1)!.props!.source)
+    await ui.unmount()
+    return [...src.matchAll(/>([^<>]+)</g)].map((m) => m[1]!.trim()).filter((x) => x && !x.includes('{'))
+  }
+  // neo-mate's 「UI 返修第二批」 (2026-10-09): step 3 runs the UI suite in the background, which ends 7s
+  // after step 5 starts; the unit tests are launched 3s before step 5 and run 26m in it; then a rerun
+  const ui3 = job('ui3', '第三次跑整套界面测试')
+  const unit = job('unit', '后台跑全量单测')
+  const rerun = job('rerun', '后台重跑全量单测')
+  await sec(60)
+  await turn('t1', [ui3], async () => {
+    await tasks('plan', { goal: 'UI 返修第二批', tasks: [{ title: '整套界面测试 + 收尾', minutes: 30 }, { title: '全量检查、合并、装机', minutes: 30 }] })
+    await launch('ui3', ui3.description)
+  })
+  await sec(700)
+  await turn('t2', [ui3, unit], async () => {
+    await launch('unit', unit.description)
+    await sec(3)
+    await tasks('done', { id: 1 })
+  })
+  await sec(7)
+  await turn('t3', [unit])
+  await sec(26 * 60)
+  await turn('t4', [rerun], async () => { await launch('rerun', rerun.description) })
+  await sec(15 * 60)
+  const rows = await card()
+  // step 2's own 41m 10s is its two runs, listed under it: the unit tests that ended (✓ 26m 10s) and the rerun (↳ 15m 00s)
+  const at = (t: string) => rows.indexOf(t)
+  expect(at('后台跑全量单测')).toBeGreaterThan(at('全量检查、合并、装机'))
+  expect(rows[at('后台跑全量单测') - 1]).toBe('✓')
+  expect(rows[at('后台跑全量单测') + 1]).toBe('26m 10s')
+  expect(rows[at('后台重跑全量单测') - 1]).toBe('↳')
+  expect(rows[at('后台重跑全量单测') + 1]).toBe('15m 00s')
+  // the UI suite spent its time in step 1 and ended 7s into step 2: not listed under step 2
+  expect(rows).not.toContain('第三次跑整套界面测试')
 })

@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, launchInLog, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -87,8 +87,15 @@ function cardRows(g) {
   const rows = []
   for (const t of visibleTasks(g)) {
     rows.push(t)
-    for (const b of bg) {
-      if (t.status === 'active' && b.status === 'running' && !b.outside) rows.push({ id: 'bg-' + b.id, title: b.title, status: 'active', sub: true, op: true, tail: clock(b) })
+    if (t.status !== 'active') continue
+    // the step running now lists its background work in the order it began: what already ended in it,
+    // ✓ with what it took, and what still runs, ↳ with its clock, so its time adds up (Neo, 2026-10-09:
+    // a step at 41m 56s over a rerun at 15m 41s, the first 26m run gone from the card)
+    const mine = bg.filter((b) => !b.outside && (b.status === 'running' || (!b.own && b.startedAt && mainStep(g, b, now) === t.id)))
+    for (const b of mine.sort((x, y) => x.startedAt - y.startedAt)) {
+      rows.push(b.status === 'running'
+        ? { id: 'bg-' + b.id, title: b.title, status: 'active', sub: true, op: true, tail: clock(b) }
+        : { id: 'bg-' + b.id, title: b.title, status: 'done', sub: true, op: true, tail: duration(Math.max(0, b.doneAt - b.startedAt)) })
     }
   }
   for (const b of ownWork(g)) rows.push({ id: 'bg-' + b.id, title: '后台 · ' + b.title, status: b.status === 'running' ? 'active' : 'done', bgRow: true, startedAt: b.startedAt, doneAt: b.doneAt })
@@ -810,7 +817,7 @@ function taskRow(el, t, width) {
   const title = mask(t.title)
   const icon = ICON[t.status] || '○'
   const lead = t.sub
-    ? Text({ dimColor: true, children: ['  ↳ '] })
+    ? Text({ dimColor: true, children: [t.status === 'done' ? '  ✓ ' : '  ↳ '] })
     : t.status === 'done'
     ? Text({ color: 'green', children: [`${icon} `] })
     : t.status === 'active'
@@ -916,7 +923,7 @@ function stepRow(el, t, width) {
   const { Box, Text } = el
   const tail = mask(t.op ? t.tail : taskTail(t))
   const lead = t.sub
-    ? Text({ dimColor: true, children: ['  ↳ '] })
+    ? Text({ dimColor: true, children: [t.status === 'done' ? '  ✓ ' : '  ↳ '] })
     : t.status === 'done'
     ? Text({ color: STEP_HUE.done, children: ['✓ '] })
     : t.status === 'active'
@@ -1009,6 +1016,6 @@ function plainText() {
   if (!G) return '这个对话还没有任务计划。'
   const p = shown(G)
   const lines = [`${label(G)}: ${mask(G.title)}`, `${headline(G, p)}  ${bar(p.fraction, 30)}`, statsLine(G, p)]
-  for (const t of cardRows(G)) lines.push(`${t.sub ? '  ↳' : ICON[t.status] || '○'} ${mask(t.title)}  ${mask(t.op ? t.tail : taskTail(t))}`)
+  for (const t of cardRows(G)) lines.push(`${t.sub ? (t.status === 'done' ? '  ✓' : '  ↳') : ICON[t.status] || '○'} ${mask(t.title)}  ${mask(t.op ? t.tail : taskTail(t))}`)
   return lines.filter(Boolean).join('\n')
 }
