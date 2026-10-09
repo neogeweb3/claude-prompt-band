@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { applyAction, autoPlan, ledgerLine, newGoal } from '../hooks/plan.mjs'
-import { CARD, FRAME, SCALE, ago, cropSvg, rowOf, rowSpans, rowSvg, stepsSvg, textW } from '../hooks/row.mjs'
+import { CARD, FRAME, LINE, ROW_ROOM, SCALE, ago, cropSvg, rowOf, rowSpans, rowSvg, stepsSvg, textW } from '../hooks/row.mjs'
 
 const BAND = {
   component: 'AbovePrompt',
@@ -17,6 +17,16 @@ const goal = (over = {}) => ({
   ...over,
 })
 const prog = { fraction: 0.5, doneN: 2, n: 4, pct: 50 }
+
+// The images inside the row's own keyed Box (the row, then its steps card), leaving out the
+// other chats' area at the right end of the desktop line
+type Node = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+const svgsIn = (n: unknown): Node[] => {
+  if (!n || typeof n !== 'object') return []
+  const node = n as Node
+  return [...(node.type === 'Svg' ? [node] : []), ...(node.children ?? []).flatMap(svgsIn)]
+}
+const rowImgs = async (ui: { find: (q: object) => Promise<unknown> }) => svgsIn(await ui.find({ type: 'Box', key: 'goal-row' }))
 
 test('a chat that has done nothing has no row at all, and never a /goal hint or 空闲', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['band'] }))
@@ -173,15 +183,13 @@ test('collapsed to one row; the steps float in a hover card that moves nothing, 
       expect(await ui.find({ type: 'Text', text: '读代码' })).toBeDefined()
     } else {
       // The desktop lifts the card into a popover whose left edge is the keyed Box's left edge
-      // and whose frame is always FRAME.w wide (renderer source, 2026-10-07). So the keyed Box
-      // holds the row drawn exactly FRAME.w wide, centred in the band, and the card fills the
-      // frame unscaled. A short row is padded with blank room inside that one image.
-      const imgs = await ui.findAll({ type: 'Svg' })
+      // and whose frame is always FRAME.w wide (renderer source, 2026-10-07). The keyed Box holds
+      // the row padded to its fixed share of the line, and the card fills the frame unscaled.
+      const imgs = await rowImgs(ui)
       expect(imgs).toHaveLength(2) // the row, the card
-      expect(imgs[0]!.props.width).toBe(FRAME.w)
-      expect(String(imgs[0]!.props.source)).toMatch(/viewBox="-[\d.]+ 0 360 30"/)
-      expect(imgs[1]!.props.width).toBe(FRAME.w - FRAME.pad * 2)
-      expect(String(imgs[1]!.props.source)).toContain('改样式')
+      expect(imgs[0]!.props!.width).toBe(LINE.w - LINE.others)
+      expect(imgs[1]!.props!.width).toBe(FRAME.w - FRAME.pad * 2)
+      expect(String(imgs[1]!.props!.source)).toContain('改样式')
       expect(hidden).not.toContain('goal-card-anchor')
     }
     expect(await ui.find({ type: 'Text', text: /^S\b|^L\b/ })).toBeUndefined()
@@ -189,36 +197,32 @@ test('collapsed to one row; the steps float in a hover card that moves nothing, 
   }
 })
 
-test('on the desktop the card sits centred over a row of any width, and every image has an alt', async ($, on) => {
+test('on the desktop the line is one fixed width whatever the row says, a long title cut to fit, and every image has an alt', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))
   mock.clock(on)
   // 1.8.1's centring strip had alt '' and the desktop dropped it: an alt must hold a non-blank
   const alts = (imgs: { props: Record<string, unknown> }[]) => imgs.every((i) => String(i.props.alt).trim() !== '')
-  for (const title of ['短', '一个很长很长的任务名字，长到整行远比卡片的外框还要宽出一大截']) {
+  const long = '一个很长很长的任务名字，长到整行远比留给它的那一截还要宽出一大截'
+  for (const title of ['短', long]) {
     await $.tool.call({ tool: 'mcp__goal-meter__tasks', action: 'plan', goal: title, tasks: [{ title: '读代码' }, { title: '改样式' }] })
     const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
     const imgs = await ui.findAll({ type: 'Svg' })
     expect(alts(imgs)).toBe(true)
-    const scope = await ui.find({ type: 'Box', key: 'goal-row' })
-    const inScope = JSON.stringify(scope)
-    // the hover's own image is FRAME.w wide whatever the row; the card fills the frame
-    const anchor = imgs.find((i) => i.props.width === FRAME.w)!
-    expect(inScope).toContain(JSON.stringify(anchor.props.source))
-    const pieces = imgs.filter((i) => !String(i.props.source).includes('改样式'))
-    const total = pieces.reduce((a, i) => a + (i.props.width as number), 0)
-    if (title === '短') {
-      expect(pieces).toHaveLength(1)
-    } else {
-      // a wide row: the parts beyond the frame are two more pieces, left and right, outside the
-      // hover, together exactly the row; the frame's middle is the row's middle within half a px
-      expect(pieces).toHaveLength(3)
-      expect(pieces[1]).toBe(anchor)
-      expect(total).toBeGreaterThan(FRAME.w)
-      const left = pieces[0]!.props.width as number
-      expect(Math.abs(left + FRAME.w / 2 - total / 2)).toBeLessThanOrEqual(0.5)
-      expect(inScope).not.toContain(JSON.stringify(pieces[0]!.props.source))
-    }
+    const row = (await rowImgs(ui))[0]!
+    const area = svgsIn(await ui.find({ type: 'Box', key: 'goal-others' }))[0]!
+    // the row's share and the right end's area: the line is LINE.w wide, short title or long
+    expect(row.props!.width).toBe(LINE.w - LINE.others)
+    expect(area.props!.width).toBe(LINE.others)
+    // what is drawn of the row stays within its room; a long title gives way, cut with …
+    const drawn = rowSvg({ state: 'running', title, fraction: 0, figure: '0/2 · 0%', detail: '' }).width
+    if (title === long) {
+      expect(drawn).toBeGreaterThan(ROW_ROOM)
+      expect(String(row.props!.source)).toContain('…')
+    } else expect(String(row.props!.source)).not.toContain('…')
+    // alone, the right end is blank and pops nothing
+    expect(String(area.props!.alt)).toBe('没有其他对话')
+    expect(JSON.stringify(await ui.find({ type: 'Box', key: 'goal-others' }))).not.toContain('"display":"none"')
     await ui.unmount()
   }
 })
@@ -312,11 +316,11 @@ test('the row leaves the step name out (room for the title); the card names it',
   await tasks('plan', { goal: '美化进度行', tasks: [{ title: '显示当前步骤', size: 'M' }, { title: '完成动画', size: 'M' }] })
   await tasks('start', { id: 1 })
   const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
-  const imgs = await ui.findAll({ type: 'Svg' })
+  const imgs = await rowImgs(ui)
   await ui.unmount()
-  expect(String(imgs[0]!.props.source)).toContain('美化进度行')
-  expect(String(imgs[0]!.props.source)).not.toContain('显示当前步骤')
-  expect(String(imgs.at(-1)!.props.source)).toContain('显示当前步骤')
+  expect(String(imgs[0]!.props!.source)).toContain('美化进度行')
+  expect(String(imgs[0]!.props!.source)).not.toContain('显示当前步骤')
+  expect(String(imgs.at(-1)!.props!.source)).toContain('显示当前步骤')
 })
 
 test('a plan just finished: a full green bar a shine runs over twice; later, the bar alone', async () => {
@@ -382,7 +386,7 @@ test('a finished step shows its time; one never started (marked done with others
   await clock.advance(10000)
   await tasks('done', { ids: [2, 3] }) // 乙 started by itself when 甲 was done; 丙 never started
   const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
-  const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
+  const card = String((await rowImgs(ui)).at(-1)!.props!.source)
   await ui.unmount()
   const tails = [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])
   expect(tails).toEqual(['3m 00s', '10s', '—'])
@@ -395,7 +399,7 @@ test('a step worked on without being marked started still shows its clock, by th
   const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
   const tails = async () => {
     const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
-    const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
+    const card = String((await rowImgs(ui)).at(-1)!.props!.source)
     await ui.unmount()
     return [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])
   }
@@ -427,8 +431,8 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   const view = async () => {
     const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
     const imgs = await ui.findAll({ type: 'Svg' })
+    const card = String((await rowImgs(ui)).at(-1)!.props!.source)
     await ui.unmount()
-    const card = String(imgs.at(-1)!.props.source)
     return { row: imgs.map((i) => String(i.props.alt)).join(' '), tails: [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1]), mark: card.includes('⏸') ? '⏸' : card.includes('▶') ? '▶' : '' }
   }
   const stop = (bg: number) => $.classic.Stop({ stop_hook_active: false, background_tasks: Array.from({ length: bg }, (_, i) => ({ id: 'b' + i, type: 'shell', status: 'running', description: 'x' })) } as never)
@@ -484,7 +488,7 @@ test('a plan marked only with "done" times every step; a "done" for a step never
   const r = await tasks('done', { ids: [3, 4] })
   expect(r.result).toContain('1 step(s) marked done without having started')
   const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
-  const card = String((await ui.findAll({ type: 'Svg' })).at(-1)!.props.source)
+  const card = String((await rowImgs(ui)).at(-1)!.props!.source)
   await ui.unmount()
   expect([...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])).toEqual(['42s', '1m 05s', '9s', '—'])
 })
@@ -887,7 +891,7 @@ test('with no plan, hovering lists the turn\'s latest operations with their time
   const card = async (surface: 'desktop' | 'terminal') => {
     const ui = await $.ui.mount({ plugin: 'goal-meter', surface, ...BAND })
     const out = surface === 'desktop'
-      ? String((await ui.findAll({ type: 'Svg' })).at(-1)?.props.source ?? '')
+      ? String((await rowImgs(ui)).at(-1)?.props?.source ?? '')
       : JSON.stringify(await ui.find({ type: 'Box', key: 'goal-row' }) ?? null)
     await ui.unmount()
     return out

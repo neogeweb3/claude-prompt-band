@@ -258,24 +258,37 @@ export function stepsSvg(steps) {
 
 // ---- desktop: other chats, a small area at the right end of the row and the card it pops
 
-// "| 其他对话 N | M 在跑", with a stack of two cards for its icon; the rule in front sets it
-// apart from the row it follows
-export const OTHERS_LEAD = 16
+// The desktop row is one fixed line, as wide as usage-band's band beneath it (632-643 px on Neo's
+// screenshots, 2026-10-09), so nothing moves when the text changes: this chat's row from the left end,
+// cut to fit, and a fixed area at the right end for the other chats (Neo: 缩来缩去、动来动去的，体验并不好)
+export const LINE = { w: 640, others: 170, gap: 16 }
+export const ROW_ROOM = LINE.w - LINE.others - LINE.gap
+
+// This chat's row cut to `room`: the title gives way, the rest stays whole
+export function fitRow(r, room = ROW_ROOM) {
+  const row = rowSvg(r)
+  if (row.width <= room || !r.title) return row
+  const title = fit(r.title, Math.max(0, textW(r.title) - (row.width - room)), D.size)
+  return rowSvg({ ...r, title })
+}
+
+// The right end's area, LINE.others wide whatever it says, its text set flush right:
+// "其他对话 N | M 在跑", with a stack of two cards for its icon; blank with no other chat
 export function othersSvg(n, running) {
-  const label = `其他对话 ${n}`
-  const tail = running ? `${running} 在跑` : '没在跑'
-  const parts = [
-    rule(OTHERS_LEAD - 8),
-    `<g class="ico" stroke-width="1.2" transform="translate(${OTHERS_LEAD + 1} ${CAP.top})"><rect x="2.5" y="0.6" width="7" height="6" rx="1.2"/><rect x="0.6" y="3.4" width="7" height="6" rx="1.2"/></g>`,
-  ]
-  let x = OTHERS_LEAD + 1 + D.icon + 6
-  parts.push(lead(x, label))
-  x += textW(label) + D.inner
-  parts.push(rule(x))
-  x += 1 + D.inner
-  parts.push(mute(x, tail))
-  x += textW(tail)
-  const width = Math.ceil(x + 2)
+  const width = LINE.others
+  const parts = []
+  if (n) {
+    const label = `其他对话 ${n}`
+    const tail = running ? `${running} 在跑` : '没在跑'
+    let x = width - 2 - textW(tail)
+    parts.push(mute(x, tail))
+    x -= D.inner + 1
+    parts.push(rule(x))
+    x -= D.inner + textW(label)
+    parts.push(lead(x, label))
+    x -= 6 + D.icon
+    parts.push(`<g class="ico" stroke-width="1.2" transform="translate(${x} ${CAP.top})"><rect x="2.5" y="0.6" width="7" height="6" rx="1.2"/><rect x="0.6" y="3.4" width="7" height="6" rx="1.2"/></g>`)
+  }
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${D.h}" viewBox="0 0 ${width} ${D.h}" style="color-scheme:light dark;background:transparent">` +
     HEAD + parts.join('') + `</svg>`

@@ -16,7 +16,7 @@
 
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, FRAME } from './row.mjs'
+import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
 import { newGoal, applyAction, progress, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
@@ -762,26 +762,29 @@ function drawRow(el, e) {
     const row = rowSvg(r)
     const alt = describe(r)
     const centred = (kids) => el.Box({ flexDirection: 'row', justifyContent: 'center', paddingX: 1, children: kids })
-    const rest = others.filter((g) => g.sessionId !== sessionId)
-    // Other chats: the row moves left and a small area follows it, set apart by a rule; resting the
-    // pointer on that area pops a card of the other chats' plans. Each keyed Box gets its own card,
-    // its left edge on the Box's left edge (renderer source, 2026-10-09), so the row's steps card
-    // hangs from the row's own left end, not centred on it
-    if (rest.length) {
-      const pop = (svg, a) => el.Box({ position: 'absolute', bottom: 1, left: 0, display: 'none', hover: { display: 'flex' }, children: [el.Svg({ source: svg.svg, alt: a, width: svg.width, height: svg.height })] })
-      const mine = [el.Svg({ source: row.svg, alt, width: row.width, height: row.height })]
+    // Desktop: one fixed line as wide as usage-band's band, so nothing moves when the text changes:
+    // this chat's row from the left end (cut to fit, padded to its full share), the other chats in a
+    // fixed area at the right end, blank when there are none. Each keyed Box pops its own card, the
+    // card's left edge on the Box's left edge (renderer source, 2026-10-09)
+    if (e.surface === 'desktop') {
+      const pop = (img, a) => el.Box({ position: 'absolute', bottom: 1, left: 0, display: 'none', hover: { display: 'flex' }, children: [el.Svg({ source: img.svg, alt: a, width: img.width, height: img.height })] })
+      const fitted = fitRow(r)
+      const share = LINE.w - LINE.others
+      const mine = [el.Svg({ source: cropSvg(fitted, 0, share), alt, width: share, height: fitted.height })]
       if (steps.length) {
         const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status === 'active' && !busy(G) ? 'paused' : t.status, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
         mine.push(pop(card, steps.map((t) => t.title).join(', ')))
       }
-      const chip = othersSvg(rest.length, rest.filter((g) => g.status === 'running').length)
-      const items = rest.slice(0, OTHERS_CARD).map(otherItem)
-      const list = othersCardSvg(items)
-      return centred([
-        el.Box({ key: 'goal-row', children: mine }),
-        el.Box({ key: 'goal-others', children: [el.Svg({ source: chip.svg, alt: `其他对话 ${rest.length}`, width: chip.width, height: chip.height }), pop(list, items.map((it) => `${it.name}: ${it.title}`).join(', '))] }),
-      ])
+      const rest = others.filter((g) => g.sessionId !== sessionId)
+      const area = othersSvg(rest.length, rest.filter((g) => g.status === 'running').length)
+      const right = [el.Svg({ source: area.svg, alt: rest.length ? `其他对话 ${rest.length}` : '没有其他对话', width: area.width, height: area.height })]
+      if (rest.length) {
+        const items = rest.slice(0, OTHERS_CARD).map(otherItem)
+        right.push(pop(othersCardSvg(items), items.map((it) => `${it.name}: ${it.title}`).join(', ')))
+      }
+      return centred([el.Box({ key: 'goal-row', children: mine }), el.Box({ key: 'goal-others', children: right })])
     }
+    // Mobile keeps the one centred row: the steps card centred over it
     if (!steps.length) return centred([el.Svg({ source: row.svg, alt, width: row.width, height: row.height })])
     // The desktop lifts the card out into a popover and sets its left edge on the left edge of the
     // keyed Box it hangs under, whatever the alignment or offsets (renderer source, 2026-10-07);
