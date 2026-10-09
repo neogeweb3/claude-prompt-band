@@ -255,3 +255,62 @@ export function stepsSvg(steps) {
     HEAD + (defs.length ? `<defs>${defs.join('')}</defs>` : '') + rows.join('') + `</svg>`
   return { svg, width, height: h }
 }
+
+// ---- desktop: other chats, a small area at the right end of the row and the card it pops
+
+// "| 其他对话 N | M 在跑", with a stack of two cards for its icon; the rule in front sets it
+// apart from the row it follows
+export const OTHERS_LEAD = 16
+export function othersSvg(n, running) {
+  const label = `其他对话 ${n}`
+  const tail = running ? `${running} 在跑` : '没在跑'
+  const parts = [
+    rule(OTHERS_LEAD - 8),
+    `<g class="ico" stroke-width="1.2" transform="translate(${OTHERS_LEAD + 1} ${CAP.top})"><rect x="2.5" y="0.6" width="7" height="6" rx="1.2"/><rect x="0.6" y="3.4" width="7" height="6" rx="1.2"/></g>`,
+  ]
+  let x = OTHERS_LEAD + 1 + D.icon + 6
+  parts.push(lead(x, label))
+  x += textW(label) + D.inner
+  parts.push(rule(x))
+  x += 1 + D.inner
+  parts.push(mute(x, tail))
+  x += textW(tail)
+  const width = Math.ceil(x + 2)
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${D.h}" viewBox="0 0 ${width} ${D.h}" style="color-scheme:light dark;background:transparent">` +
+    HEAD + parts.join('') + `</svg>`
+  return { svg, width, height: D.h }
+}
+
+const OTHER = { line: 20, gap: 10, barW: 120 }
+
+// Two lines a chat: its project and goal, then a bar, done of total and time left (or 完成 ✓).
+// items: { name, title, fraction, figure, right, done }
+export function othersCardSvg(items) {
+  const width = CARD.max
+  const rows = []
+  let y = 14
+  for (const it of items) {
+    const nameW = textW(it.name, STEP.size) + 8
+    rows.push(`<text x="0" y="${y}" font-size="${STEP.size}" font-weight="600" class="lead">${esc(it.name)}</text>`)
+    rows.push(`<text x="${nameW}" y="${y}" font-size="${STEP.size}" class="mute">${esc(fit(it.title, width - nameW, STEP.size))}</text>`)
+    const y2 = y + OTHER.line
+    const by = y2 - 8
+    const fw = it.done ? OTHER.barW : Math.max(it.fraction > 0 ? D.barH : 0, Math.min(OTHER.barW, OTHER.barW * it.fraction))
+    rows.push(it.done
+      ? `<rect x="0" y="${by}" width="${OTHER.barW}" height="${D.barH}" rx="${D.barH / 2}" fill="${lighten(HUE.done, -0.12)}"/>`
+      : `<rect x="0" y="${by}" width="${OTHER.barW}" height="${D.barH}" rx="${D.barH / 2}" class="trk"/><rect x="0" y="${by}" width="${fw}" height="${D.barH}" rx="${D.barH / 2}" class="bar"/>`)
+    if (it.figure) rows.push(`<text x="${OTHER.barW + 10}" y="${y2}" font-size="${STEP.size}" class="fig">${esc(it.figure)}</text>`)
+    if (it.right) {
+      rows.push(it.done
+        ? `<text x="${width}" y="${y2}" font-size="${STEP.size}" text-anchor="end" class="ink" style="--l:${lighten(HUE.done, -0.38)};--d:${lighten(HUE.done, 0.25)}">${esc(it.right)}</text>`
+        : `<text x="${width}" y="${y2}" font-size="${STEP.size}" text-anchor="end" class="mute">${esc(it.right)}</text>`)
+    }
+    y = y2 + OTHER.line + OTHER.gap
+  }
+  const h = Math.max(1, y - OTHER.line - OTHER.gap + 6)
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}" viewBox="0 0 ${width} ${h}" style="color-scheme:light dark;background:transparent">` +
+    HEAD + rows.join('') + `</svg>`
+  return { svg, width, height: h }
+}

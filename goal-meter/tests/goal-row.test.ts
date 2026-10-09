@@ -955,3 +955,56 @@ test('the running step shows its clock alone, no 进行中', async ($, on) => {
     expect(all).not.toContain('进行中')
   }
 })
+
+test('on the desktop, other chats show as a small area after the row, its own card listing their plans', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('ui.open', () => ({ value: undefined }))
+  on('session.surface', () => ({ value: 'desktop' }))
+  on('command.run', () => ({}))
+  const clock = mock.clock(on)
+  const t0 = 50 * 60000
+  await clock.advance(t0)
+  // two other chats wrote their goal files: one running in a worktree of neo-fitness, one done
+  const files: Record<string, unknown> = {
+    'aaa.json': (() => {
+      const g = newGoal({ sessionId: 'aaa', condition: '倾斜提示', now: t0 - 20 * 60000, cwd: '/Users/me/neo-fitness/.claude/worktrees/card-c6b576' })
+      applyAction(g, { action: 'plan', tasks: [{ title: '读代码', minutes: 10 }, { title: '实现', minutes: 30 }] }, { now: t0 - 20 * 60000 })
+      applyAction(g, { action: 'done', id: 1 }, { now: t0 - 5 * 60000 })
+      return { ...g, label: 'card-c6b576' }
+    })(),
+    'bbb.json': { sessionId: 'bbb', cwd: '/Users/me/memory-vault', label: 'memory-vault', title: 'Anna 常驻', status: 'met', startedAt: t0 - 30 * 60000, endedAt: t0 - 60000, planned: true, updatedAt: t0, tasks: [{ id: 1, title: '装', status: 'done' }] },
+  }
+  on('fs.list', () => ({ value: Object.keys(files).map((name) => ({ kind: 'file', name, mtimeMs: t0 })) }))
+  on('fs.read', (_$, e) => {
+    const name = String((e as { path: string }).path).split('/').pop()!
+    if (!(name in files)) throw new Error('no such file')
+    return { value: JSON.stringify(files[name]) }
+  })
+  await $.tool.call({ tool: 'mcp__goal-meter__tasks', action: 'plan', goal: '这个对话的活', tasks: [{ title: '读代码' }, { title: '改样式' }] })
+  await $.command.run({ command: 'goals', args: '' } as never)
+  const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+  const area = await ui.find({ type: 'Box', key: 'goal-others' })
+  expect(area).toBeDefined()
+  const inArea = JSON.stringify(area)
+  expect(inArea).toContain('其他对话 2')
+  expect(inArea).toContain('1 在跑')
+  // the card: the project, not the worktree's folder; time left for the running one, 完成 for the done one
+  expect(inArea).toContain('neo-fitness')
+  expect(inArea).not.toContain('card-c6b576')
+  expect(inArea).toContain('倾斜提示')
+  expect(inArea).toContain('剩约')
+  expect(inArea).toContain('完成 ✓')
+  expect(inArea).toContain('"display":"none"')
+  // the row keeps its own card, and only its own
+  const row = JSON.stringify(await ui.find({ type: 'Box', key: 'goal-row' }))
+  expect(row).toContain('改样式')
+  expect(row).not.toContain('neo-fitness')
+  const alts = (await ui.findAll({ type: 'Svg' })).every((i) => String(i.props.alt).trim() !== '')
+  expect(alts).toBe(true)
+  await ui.unmount()
+  // the terminal keeps its one row
+  const term = await $.ui.mount({ plugin: 'goal-meter', surface: 'terminal', ...BAND })
+  expect(await term.find({ type: 'Box', key: 'goal-others' })).toBeUndefined()
+  await term.unmount()
+})

@@ -16,13 +16,14 @@
 
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
-import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, FRAME } from './row.mjs'
+import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, FRAME } from './row.mjs'
 import { newGoal, applyAction, progress, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
 const RECENT_MS = 10 * 60000 // a finished goal stays on screen this long
-const OTHERS_MS = 12 * 3600000 // other chats' goals shown in /goals
+const OTHERS_MS = 12 * 3600000 // other chats' goals shown in /goals and at the row's right end
+const OTHERS_CARD = 8 // chats listed in the card the row's right end pops
 const REOPEN_MS = 5 * 60000 // a goal closed on its tasks reopens if Claude carries on this soon
 const NUDGE_AFTER = 4 // tool calls into a goal with no plan before the reminder
 const CELEBRATE_MS = 6000 // a finished plan's rainbow sweep plays only in renders this soon after
@@ -293,11 +294,14 @@ export function register(on) {
     }
     commandName = (await registerCommand($)) || commandName
     await restore($)
+    now = await $.clock.now()
+    await loadOthers($)
     $.clock.every(15000, async () => {
       now = await $.clock.now()
-      if (paneOpen) await loadOthers($)
+      // the other chats show at the right end of the row, so they are read on every tick
+      await loadOthers($)
       // a finished row says how long ago it finished, so it redraws too
-      if (paneOpen || G || lastTurn) $.ui.invalidate('ui.render')
+      if (paneOpen || G || lastTurn || others.length) $.ui.invalidate('ui.render')
     })
     $.clock.every(10000, () => readRecording($).catch(() => {}))
     // a step's clock counts by the second, as the background-task panel's does
@@ -758,6 +762,26 @@ function drawRow(el, e) {
     const row = rowSvg(r)
     const alt = describe(r)
     const centred = (kids) => el.Box({ flexDirection: 'row', justifyContent: 'center', paddingX: 1, children: kids })
+    const rest = others.filter((g) => g.sessionId !== sessionId)
+    // Other chats: the row moves left and a small area follows it, set apart by a rule; resting the
+    // pointer on that area pops a card of the other chats' plans. Each keyed Box gets its own card,
+    // its left edge on the Box's left edge (renderer source, 2026-10-09), so the row's steps card
+    // hangs from the row's own left end, not centred on it
+    if (rest.length) {
+      const pop = (svg, a) => el.Box({ position: 'absolute', bottom: 1, left: 0, display: 'none', hover: { display: 'flex' }, children: [el.Svg({ source: svg.svg, alt: a, width: svg.width, height: svg.height })] })
+      const mine = [el.Svg({ source: row.svg, alt, width: row.width, height: row.height })]
+      if (steps.length) {
+        const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status === 'active' && !busy(G) ? 'paused' : t.status, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
+        mine.push(pop(card, steps.map((t) => t.title).join(', ')))
+      }
+      const chip = othersSvg(rest.length, rest.filter((g) => g.status === 'running').length)
+      const items = rest.slice(0, OTHERS_CARD).map(otherItem)
+      const list = othersCardSvg(items)
+      return centred([
+        el.Box({ key: 'goal-row', children: mine }),
+        el.Box({ key: 'goal-others', children: [el.Svg({ source: chip.svg, alt: `其他对话 ${rest.length}`, width: chip.width, height: chip.height }), pop(list, items.map((it) => `${it.name}: ${it.title}`).join(', '))] }),
+      ])
+    }
     if (!steps.length) return centred([el.Svg({ source: row.svg, alt, width: row.width, height: row.height })])
     // The desktop lifts the card out into a popover and sets its left edge on the left edge of the
     // keyed Box it hangs under, whatever the alignment or offsets (renderer source, 2026-10-07);
@@ -808,6 +832,21 @@ async function openPane($) {
   await loadOthers($)
   paneOpen = true
   await $.ui.open({ id: PANE, title: 'Goal meter', focus: true, closeOnEscape: true })
+}
+
+// What the card of other chats says about one: its project (the folder the chat runs in, a worktree's
+// own folder skipped), goal, bar and either the time left or how it ended
+function otherItem(g) {
+  const p = progress(g)
+  const project = (g.cwd || '').split('/.claude/worktrees/')[0].split('/').filter(Boolean).pop() || g.label || '?'
+  const done = g.status === 'met'
+  const t = g.status === 'running' && (g.planned || g.planAt) ? eta(g, now) : null
+  let right
+  if (done) right = '完成 ✓'
+  else if (g.status !== 'running') right = '已停止'
+  else if (!(g.planned || g.planAt)) right = '列步骤中'
+  else right = t ? `剩约 ${minutes(t.ms)}` : g.background ? '后台在跑' : ''
+  return { name: mask(project), title: mask(g.title || ''), fraction: done ? 1 : p.fraction, figure: p.n ? `${p.doneN}/${p.n}` : '', right, done }
 }
 
 function otherRow(el, g, width) {
