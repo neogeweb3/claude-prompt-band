@@ -445,7 +445,8 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
   await clock.advance(33000)
   let v = await view()
-  expect(v.tails).toEqual(['10s', '10s', '38s'])
+  // the background task is the plan's own work, listed after its steps with its clock
+  expect(v.tails).toEqual(['10s', '10s', '38s', '33s'])
   expect(v.row).toContain('剩约')
   expect(v.mark).toBe('▶') // the background task is still at it
   // the background task woke a turn that ended with nothing left running: the work waits on the person
@@ -454,7 +455,7 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
   await clock.advance(60000)
   v = await view()
-  expect(v.tails).toEqual(['10s', '10s', '38s']) // 丙 stands where the work stopped
+  expect(v.tails).toEqual(['10s', '10s', '38s', '33s']) // 丙 stands where the work stopped; the background task ran 33s
   expect(v.row).not.toContain('剩约')
   // the turn stopped with nothing running: the step it is on reads paused (a real chat, 2026-10-07 16:12)
   expect(v.mark).toBe('⏸')
@@ -467,7 +468,7 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't3' })
   await clock.advance(120000)
   v = await view()
-  expect(v.tails).toEqual(['10s', '10s', '7s'])
+  expect(v.tails).toEqual(['10s', '10s', '7s', '33s'])
   expect(v.mark).toBe('⏸')
 })
 
@@ -871,6 +872,9 @@ test('every step done but a background task still running: not finished until it
   let r = await row()
   expect(r).not.toContain('完成')
   expect(r).toContain('后台 1 个任务在跑')
+  // the background work counts as a step of its own: 2 of 3, not 2/2 · 100% (neo-mate, 2026-10-09)
+  expect(r).toContain('2/3 · 67%')
+  expect(r).toContain('后台 · Codex stage 3')
   // the build ends and wakes a turn; nothing left in the background: now it is finished
   await clock.advance(600000)
   await $.turn.start({ text: '', turnId: 't2' })
@@ -878,7 +882,59 @@ test('every step done but a background task still running: not finished until it
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
   r = await row()
   expect(r).toContain('完成')
-  expect(r).not.toContain('后台')
+  expect(r).not.toContain('在跑')
+})
+
+test('background work the plan started is a step of its own: on the row, in the card, in the file other chats read', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const card = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const imgs = await rowImgs(ui)
+    await ui.unmount()
+    return { row: String(imgs[0]!.props!.alt), card: String(imgs.at(-1)!.props!.source) }
+  }
+  const server = { id: 'srv', type: 'shell', status: 'running', description: '在 57611 端口起工作台', command: 'python cli.py dashboard --port 57611' }
+  const old = { id: 'old', type: 'shell', status: 'running', description: '上一个计划留下的服务器', command: 'npm run dev' }
+  const stop = (list: object[]) => $.classic.Stop({ stop_hook_active: false, background_tasks: list } as never)
+  // an earlier turn left a dev server on, before this plan began
+  await clock.advance(60000)
+  await $.turn.start({ text: '先起个服务', turnId: 't0' })
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', description: '上一个计划留下的服务器', run_in_background: true } as never)
+  await stop([old])
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't0' })
+  // what neo-mate did (2026-10-09 08:42–08:45): plan three steps, start a dashboard in the background
+  // to reproduce the bug, mark all three done, hand the fix over, leave the dashboard running
+  await clock.advance(60000)
+  await $.turn.start({ text: '修事项详情面板', turnId: 't1' })
+  await tasks('plan', { goal: '修事项详情面板', tasks: [{ title: '复现', minutes: 5 }, { title: '读代码', minutes: 10 }, { title: '出改法', minutes: 5 }] })
+  await clock.advance(20000)
+  await $.tool.call({ tool: 'Bash', command: server.command, description: server.description, run_in_background: true } as never)
+  await clock.advance(120000)
+  await tasks('done', { ids: [1, 2, 3] })
+  await clock.advance(10000)
+  await stop([old, server])
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  let v = await card()
+  // 3 steps done and the plan's one server still up: 3/4 · 75%, never 100%; the old server is not the plan's
+  expect(v.row).toContain('3/4 · 75%')
+  expect(v.row).not.toContain('完成')
+  expect(v.card).toContain('后台 · 在 57611 端口起工作台')
+  expect(v.card).not.toContain('上一个计划留下的服务器')
+  // its clock runs from the call that launched it (2m 10s ago), not from when the turn stopped
+  expect(v.card).toContain('2m 10s')
+  // the server is stopped; the turn it wakes ends with only the old one left: the plan is finished
+  await clock.advance(60000)
+  await $.turn.start({ text: '', turnId: 't2' })
+  await stop([old])
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
+  v = await card()
+  expect(v.row).toContain('完成')
 })
 
 test('with no plan, hovering lists the turn\'s latest operations with their times', async ($, on) => {
@@ -976,6 +1032,13 @@ test('on the desktop, other chats show as a small area after the row, its own ca
       applyAction(g, { action: 'done', id: 1 }, { now: t0 - 5 * 60000 })
       return { ...g, label: 'card-c6b576' }
     })(),
+    // a chat whose steps are all done while the dashboard it started still runs (its file carries bg)
+    'ccc.json': (() => {
+      const g = newGoal({ sessionId: 'ccc', condition: '修事项详情面板', now: t0 - 10 * 60000, cwd: '/Users/me/neo-mate' })
+      applyAction(g, { action: 'plan', tasks: [{ title: '复现', minutes: 5 }, { title: '出改法', minutes: 5 }] }, { now: t0 - 10 * 60000 })
+      applyAction(g, { action: 'done', ids: [1, 2] }, { now: t0 - 5 * 60000 })
+      return { ...g, bg: [{ id: 'srv', title: '起工作台', status: 'running', startedAt: t0 - 8 * 60000, step: 1, own: true }] }
+    })(),
     'bbb.json': { sessionId: 'bbb', cwd: '/Users/me/memory-vault', label: 'memory-vault', title: 'Anna 常驻', status: 'met', startedAt: t0 - 30 * 60000, endedAt: t0 - 60000, planned: true, updatedAt: t0, tasks: [{ id: 1, title: '装', status: 'done' }] },
   }
   on('fs.list', () => ({ value: Object.keys(files).map((name) => ({ kind: 'file', name, mtimeMs: t0 })) }))
@@ -990,8 +1053,11 @@ test('on the desktop, other chats show as a small area after the row, its own ca
   const area = await ui.find({ type: 'Box', key: 'goal-others' })
   expect(area).toBeDefined()
   const inArea = JSON.stringify(area)
-  expect(inArea).toContain('其他对话 2')
-  expect(inArea).toContain('1 在跑')
+  expect(inArea).toContain('其他对话 3')
+  expect(inArea).toContain('2 在跑')
+  // the chat with only its background work left: 2 of 3 and 后台在跑, not 2/2 and done
+  expect(inArea).toContain('2/3')
+  expect(inArea).toContain('后台在跑')
   // the card: the project, not the worktree's folder; time left for the running one, 完成 for the done one
   expect(inArea).toContain('neo-fitness')
   expect(inArea).not.toContain('card-c6b576')
@@ -1018,4 +1084,44 @@ test('on the desktop, other chats show as a small area after the row, its own ca
   const term = await $.ui.mount({ plugin: 'goal-meter', surface: 'terminal', ...BAND })
   expect(await term.find({ type: 'Box', key: 'goal-others' })).toBeUndefined()
   await term.unmount()
+})
+
+test('background work still inside the step that started it is that step\'s, not counted twice', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const view = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const imgs = await rowImgs(ui)
+    await ui.unmount()
+    return { row: String(imgs[0]!.props!.alt), card: String(imgs.at(-1)!.props!.source) }
+  }
+  const review = { id: 'cx', type: 'shell', status: 'running', description: 'Codex 外审', command: 'codex exec review < /dev/null' }
+  const stop = (list: object[]) => $.classic.Stop({ stop_hook_active: false, background_tasks: list } as never)
+  // what the skills chat did (2026-10-09): its step "Codex 外审一轮" runs the review in the background
+  await clock.advance(60000)
+  await $.turn.start({ text: '外审', turnId: 't1' })
+  await tasks('plan', { goal: '合并插件', tasks: [{ title: '改代码', minutes: 5 }, { title: 'Codex 外审一轮', minutes: 30 }, { title: '发版', minutes: 5 }] })
+  await clock.advance(60000)
+  await tasks('done', { id: 1 })
+  await $.tool.call({ tool: 'Bash', command: review.command, description: review.description, run_in_background: true } as never)
+  await stop([review])
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  let v = await view()
+  // the step's ▶ and clock already stand for the review: 1/3, no extra row
+  expect(v.row).toContain('1/3')
+  expect(v.card).not.toContain('后台 ·')
+  // the step is marked done while the review still runs: now it is work of its own
+  await clock.advance(60000)
+  await $.turn.start({ text: '', turnId: 't2' })
+  await tasks('done', { id: 2 })
+  await stop([review])
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
+  v = await view()
+  expect(v.row).toContain('2/4')
+  expect(v.card).toContain('后台 · Codex 外审')
 })

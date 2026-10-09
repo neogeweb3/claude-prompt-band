@@ -80,6 +80,53 @@ export function progress(goal) {
   }
 }
 
+// Background work that outlives the step it was started in counts as a step of its own on the row:
+// a plan whose steps are all done while a shell or agent it started still runs is not 100% (Neo,
+// 2026-10-09: a dev server neo-mate started while reproducing a bug, left on after all three steps
+// were done, read 3/3 · 100% beside 后台 1 个任务在跑). Work still inside the step that started it is
+// that step's, already shown by its ▶ and clock, and is not counted twice (the same day, a Codex review
+// run in the background under its own step "Codex 外审一轮" read right as 8/11). Each such task weighs
+// what an average step of the plan weighs, and is done once it no longer runs. The time left still
+// comes from the steps alone: a background task gives no minutes.
+export const ownWork = (goal) => (Array.isArray(goal.bg) ? goal.bg : []).filter((b) => b.own)
+
+export function shown(goal) {
+  const p = progress(goal)
+  const bg = ownWork(goal)
+  if (!bg.length) return p
+  const each = p.n ? p.total / p.n : 1
+  const doneB = bg.filter((b) => b.status === 'done').length
+  const total = p.total + each * bg.length
+  const doneW = p.doneW + each * doneB
+  return { ...p, total, doneW, doneN: p.doneN + doneB, n: p.n + bg.length, pct: Math.round((100 * doneW) / total), fraction: doneW / total }
+}
+
+// Fold what the last turn left running (classic.Stop's background_tasks: only work still in flight)
+// into the plan's own list. `seen` maps each task id to { at, step }: when it started (the background
+// tool call that launched it, else when first seen) and the step running then. Only tasks started
+// since the plan began are the plan's, so a server left on by an earlier plan does not hold every
+// later one open. A task still running once its step is no longer running (done, dropped, or none
+// at all) becomes work of its own (`own`, kept from then on). A task of the plan's that no longer
+// runs is done. Returns how many of the plan's tasks still run.
+export function foldBackground(goal, list, seen, now) {
+  const running = new Set(list.map((b) => String(b.id)))
+  const bg = Array.isArray(goal.bg) ? goal.bg : (goal.bg = [])
+  for (const b of list) {
+    const id = String(b.id)
+    if (bg.some((x) => x.id === id)) continue
+    const from = seen.get(id) || { at: now, step: 0 }
+    if (from.at < goal.startedAt) continue
+    bg.push({ id, title: String(b.description || b.command || b.type || '后台任务').replace(/\s+/g, ' ').trim().slice(0, 80), kind: String(b.type || ''), status: 'running', startedAt: from.at, step: from.step || 0 })
+  }
+  for (const x of bg) {
+    if (x.status !== 'running') continue
+    if (!running.has(x.id)) { Object.assign(x, { status: 'done', doneAt: now }); continue }
+    const step = x.step ? goal.tasks.find((t) => t.id === x.step) : null
+    if (!step || step.status !== 'active') x.own = true
+  }
+  return bg.filter((x) => x.status === 'running').length
+}
+
 // The time left for the whole plan, the way evidence-based scheduling does it (FogBugz, Joel
 // Spolsky 2007): whoever does the work estimates each step, and the estimates are corrected by how
 // they have held up. Claude gives each step its minutes; a step done shows what it really took, and

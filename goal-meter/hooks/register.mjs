@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, shown, ownWork, foldBackground, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -44,6 +44,8 @@ let callsWithoutPlan = 0
 let working = false // a main turn is running
 let background = 0 // background tasks still in flight when the last turn stopped
 let backgroundWork = [] // what they are, in a few words each
+const bgSeen = new Map() // each background task's id → { at: when it started, step: the step running then }
+let bgLaunches = [] // background tool calls of this session not yet matched to a task: { command, description, at, step }
 let forking = false // a fork of the conversation is asking how much longer
 let askClock = false // the clock that checks for an ask while Claude waits; started the first time it does
 let turnCalls = 0 // its tool calls so far, the mod's own left out
@@ -71,6 +73,12 @@ function isRecent(g) {
 
 function visibleTasks(g) {
   return g.tasks.filter((t) => !t.replaced && t.status !== 'dropped')
+}
+
+// The plan's background work as steps of the card, after the plan's own: running ▶ with its clock,
+// done ✓ with what it took
+function bgSteps(g) {
+  return ownWork(g).map((b) => ({ id: 'bg-' + b.id, title: '后台 · ' + b.title, status: b.status === 'running' ? 'active' : 'done', startedAt: b.startedAt, doneAt: b.doneAt }))
 }
 
 async function save($) {
@@ -385,8 +393,24 @@ export function register(on) {
     if (e && typeof e.transcript_path === 'string' && e.transcript_path) transcriptPath = e.transcript_path
     // a turn that stops with shells or agents still running in the background is not done: the
     // step being worked on keeps its clock until they wake the next turn
-    background = e && Array.isArray(e.background_tasks) ? e.background_tasks.length : 0
-    backgroundWork = background ? e.background_tasks.map((b) => clip(String(b.description || ''), 80)).filter(Boolean).slice(0, 5) : []
+    const list = e && Array.isArray(e.background_tasks) ? e.background_tasks : []
+    const at = await $.clock.now()
+    // when each task started: the background tool call that launched it (the same command, else the
+    // same description), else now, the first time a turn left it running
+    for (const b of list) {
+      const id = String(b.id)
+      if (bgSeen.has(id)) continue
+      const cmd = String(b.command || '').slice(0, 200)
+      const i = bgLaunches.findIndex((l) => (cmd && l.command.slice(0, 200) === cmd) || (!cmd && l.description && l.description === String(b.description || '')))
+      bgSeen.set(id, i >= 0 ? { at: bgLaunches[i].at, step: bgLaunches[i].step } : { at, step: 0 })
+      if (i >= 0) bgLaunches.splice(i, 1)
+    }
+    // a running plan counts only the work it started; that work shows on its row and card as steps
+    if (G && G.status === 'running') {
+      background = foldBackground(G, list, bgSeen, at)
+      await save($)
+    } else background = list.length
+    backgroundWork = list.map((b) => clip(String(b.description || ''), 80)).filter(Boolean).slice(0, 5)
     return next(e)
   })
 
@@ -396,6 +420,10 @@ export function register(on) {
     if (!e.agentId && e.tool !== 'ToolSearch') {
       turnCalls += 1
       op = { title: opLabel(e), at: await $.clock.now(), doneAt: 0 }
+      if ((e.tool === 'Bash' && e.run_in_background) || ((e.tool === 'Agent' || e.tool === 'Task') && e.run_in_background !== false)) {
+        const step = G && G.status === 'running' ? (G.tasks.find((t) => t.status === 'active' && !t.replaced) || {}).id || 0 : 0
+        bgLaunches = [...bgLaunches, { command: String(e.command || ''), description: String(e.description || ''), at: op.at, step }].slice(-20)
+      }
       ops = [...ops, op].slice(-OPS_KEEP)
       if (!(G && G.status === 'running')) $.ui.invalidate('ui.render')
     }
@@ -670,7 +698,7 @@ function footerLabel() {
   const word = G.kind === 'plan' ? 'plan' : 'goal'
   if (G.status === 'running') {
     if (!(G.planned || G.planAt)) return `◎ ${word} · planning`
-    const p = progress(G)
+    const p = shown(G)
     const t = eta(G, now)
     return `◎ ${word} ${p.pct}%` + (t ? ` · ~${minutes(t.ms)}` : ` · ${p.doneN}/${p.n}`)
   }
@@ -742,7 +770,7 @@ function taskRow(el, t, width) {
 // ---------- drawing ----------
 
 function drawRow(el, e) {
-  const p = G ? progress(G) : null
+  const p = G ? shown(G) : null
   const t = busy(G) ? eta(G, now) : null
   const work = working && !(G && G.status === 'running') ? { calls: turnCalls } : null
   const celebrate = !!G && G.status === 'met' && now - (G.endedAt || 0) < CELEBRATE_MS
@@ -750,7 +778,7 @@ function drawRow(el, e) {
   if (!r) return null // a chat that has done nothing yet: no row at all
   const desk = e.surface === 'desktop' || e.surface === 'mobile'
   const width = Math.max(40, (e.props && e.props.bodyColumns) || 100)
-  const planned = G && (r.state === 'running' || r.state === 'planning' || r.state === 'done' || r.state === 'stopped') ? visibleTasks(G) : []
+  const planned = G && (r.state === 'running' || r.state === 'planning' || r.state === 'done' || r.state === 'stopped') ? [...visibleTasks(G), ...bgSteps(G)] : []
   // no plan to show: the card lists this turn's latest operations instead, so hovering always
   // shows what Claude is doing, even in a chat where Claude never made a plan
   const steps = planned.length ? planned : (r.state === 'working' || r.state === 'last') ? ops.map(opStep) : []
@@ -851,7 +879,7 @@ async function openPane($) {
 // What the card of other chats says about one: its project (the folder the chat runs in, a worktree's
 // own folder skipped), goal, bar and either the time left or how it ended
 function otherItem(g) {
-  const p = progress(g)
+  const p = shown(g)
   const project = (g.cwd || '').split('/.claude/worktrees/')[0].split('/').filter(Boolean).pop() || g.label || '?'
   const done = g.status === 'met'
   const t = g.status === 'running' && (g.planned || g.planAt) ? eta(g, now) : null
@@ -859,13 +887,13 @@ function otherItem(g) {
   if (done) right = '完成 ✓'
   else if (g.status !== 'running') right = '已停止'
   else if (!(g.planned || g.planAt)) right = '列步骤中'
-  else right = t ? `剩约 ${minutes(t.ms)}` : g.background ? '后台在跑' : ''
+  else right = t ? `剩约 ${minutes(t.ms)}` : ownWork(g).some((b) => b.status === 'running') ? '后台在跑' : ''
   return { name: mask(project), title: mask(g.title || ''), fraction: done ? 1 : p.fraction, figure: p.n ? `${p.doneN}/${p.n}` : '', right, done }
 }
 
 function otherRow(el, g, width) {
   const { Box, Text } = el
-  const p = progress(g)
+  const p = shown(g)
   const name = clip(mask(`${g.label || basename(g.cwd)}: ${g.title}`), Math.max(16, Math.floor(width * 0.4)))
   let tail
   if (g.status === 'met') tail = 'done ✓'
@@ -891,14 +919,14 @@ function drawPane(el, width, surface) {
   const { Box, Text } = el
   const rows = []
   if (G) {
-    const p = progress(G)
+    const p = shown(G)
     // the same row as above the prompt, in usage-band's style
     const row = drawRow(el, { surface, props: { bodyColumns: width } })
     if (row) rows.push(row)
     const stats = statsLine(G, p)
     if (stats) rows.push(Text({ dimColor: true, children: [stats] }))
     rows.push(Text({ children: [' '] }))
-    const tasks = G.tasks.filter((t) => !t.replaced)
+    const tasks = [...G.tasks.filter((t) => !t.replaced), ...bgSteps(G)]
     if (!tasks.length) rows.push(Text({ dimColor: true, children: ['No task plan yet.'] }))
     for (const t of tasks) rows.push(taskRow(el, t, width))
     if (G.check && G.check.reason) {
@@ -920,8 +948,8 @@ function drawPane(el, width, surface) {
 
 function plainText() {
   if (!G) return '这个对话还没有任务计划。'
-  const p = progress(G)
+  const p = shown(G)
   const lines = [`${label(G)}: ${mask(G.title)}`, `${headline(G, p)}  ${bar(p.fraction, 30)}`, statsLine(G, p)]
-  for (const t of G.tasks.filter((x) => !x.replaced)) lines.push(`${ICON[t.status] || '○'} ${mask(t.title)}  ${mask(taskTail(t))}`)
+  for (const t of [...G.tasks.filter((x) => !x.replaced), ...bgSteps(G)]) lines.push(`${ICON[t.status] || '○'} ${mask(t.title)}  ${mask(taskTail(t))}`)
   return lines.filter(Boolean).join('\n')
 }
