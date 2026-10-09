@@ -212,7 +212,7 @@ const STEP = { h: 22, top: 1, size: 13, gap: 28 }
 export const CARD = { min: FRAME.w - FRAME.pad * 2, max: FRAME.w - FRAME.pad * 2, pad: 2 }
 // the step it is on: ▶ while work runs, ⏸ once the turn has stopped with nothing left running
 // (text presentation, not the colour emoji)
-const MARK = { done: '✓', active: '▶', paused: '⏸\uFE0E', pending: '○' }
+const MARK = { done: '✓', active: '▶', paused: '⏸\uFE0E', pending: '○', outside: '▶' }
 const TIME_ROOM = '12m 34s' // the time column is at least this wide
 
 // Cut text to fit `room` px, by the same measure the row uses
@@ -235,10 +235,13 @@ export function stepsSvg(steps) {
   const rows = steps.map((s, i) => {
     const y = STEP.top + i * STEP.h + 15
     const hue = s.status === 'done' ? HUE.done : null
-    const mark = MARK[s.status] || '○'
-    const on = s.status === 'active' || s.status === 'paused'
+    // background work running inside a step sits under it, set in, ↳ and muted; work outside the
+    // plan is muted too
+    const mark = s.sub ? '↳' : MARK[s.status] || '○'
+    const quiet = s.sub || s.status === 'outside'
+    const on = !quiet && (s.status === 'active' || s.status === 'paused')
     const tail = s.tail ? s.tail : ''
-    const x0 = CARD.pad
+    const x0 = CARD.pad + (s.sub ? 16 : 0)
     const tx = x0 + 18
     const title = fit(s.title, width - tx - CARD.pad - tails[i], STEP.size)
     const markSvg = hue
@@ -246,7 +249,7 @@ export function stepsSvg(steps) {
       : `<text x="${x0}" y="${y}" font-size="${STEP.size}" class="${on ? 'lead' : 'mute'}">${mark}</text>`
     const titleSvg = on
       ? `<text x="${tx}" y="${y}" font-size="${STEP.size}" class="lead">${esc(title)}</text>`
-      : `<text x="${tx}" y="${y}" font-size="${STEP.size}" class="${s.status === 'pending' ? 'lead' : 'mute'}">${esc(title)}</text>`
+      : `<text x="${tx}" y="${y}" font-size="${STEP.size}" class="${s.status === 'pending' && !quiet ? 'lead' : 'mute'}">${esc(title)}</text>`
     const tailSvg = tail ? `<text x="${width - CARD.pad}" y="${y}" font-size="${STEP.size}" text-anchor="end" class="mute">${esc(tail)}</text>` : ''
     return markSvg + titleSvg + tailSvg
   })

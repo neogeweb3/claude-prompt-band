@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { applyAction, autoPlan, ledgerLine, newGoal } from '../hooks/plan.mjs'
+import { applyAction, autoPlan, foldBackground, ledgerLine, newGoal, shown } from '../hooks/plan.mjs'
 import { CARD, FRAME, LINE, ROW_ROOM, SCALE, ago, cropSvg, rowOf, rowSpans, rowSvg, stepsSvg, textW } from '../hooks/row.mjs'
 
 const BAND = {
@@ -440,13 +440,15 @@ test('when the turn ends and nothing runs in the background, the clocks stop and
   await tasks('plan', { goal: '收尾', tasks: [{ title: '甲' }, { title: '乙' }, { title: '丙' }, { title: '丁' }] })
   for (const id of [1, 2]) { await clock.advance(10000); await tasks('done', { id }) }
   await clock.advance(5000)
-  // 丙 started by itself; a background task is still carrying it when the turn stops: its clock and the estimate go on
+  // 丙 started by itself; a background task it launched is still carrying it when the turn stops: its clock and the estimate go on
+  await $.tool.call({ tool: 'Bash', command: 'run', description: 'x', run_in_background: true } as never)
   await stop(1)
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
   await clock.advance(33000)
   let v = await view()
-  // the background task is 丙's, still running under it: no row of its own
-  expect(v.tails).toEqual(['10s', '10s', '38s'])
+  // the background task is 丙's, still running under it: set under 丙 with its clock, not a step of its own
+  expect(v.tails).toEqual(['10s', '10s', '38s', '33s'])
+  expect(v.mark).toBe('▶')
   expect(v.row).toContain('剩约')
   expect(v.mark).toBe('▶') // the background task is still at it
   // the background task woke a turn that ended with nothing left running: the work waits on the person
@@ -759,6 +761,7 @@ test('while Claude waits on background work, a fork of the conversation is asked
   await $.turn.start({ text: '跑门禁', turnId: 't1' })
   await tasks('plan', { goal: '门禁', tasks: [{ title: '全量门禁', size: 'L', minutes: 20 }] })
   // the gate goes to the background and the turn ends: Claude makes no tool call until it wakes
+  await $.tool.call({ tool: 'Bash', command: 'run', description: 'Run full verify-native gate', run_in_background: true } as never)
   await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'Run full verify-native gate' }] } as never)
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
   await min(4.5)
@@ -796,6 +799,7 @@ test('an answer is taken as given, so a step is not asked again and again (6 for
   await clock.advance(16000); await tasks('done', { id: 1 })
   await clock.advance(33000); await tasks('done', { id: 2 })
   await clock.advance(1000); await tasks('done', { id: 3 })
+  await $.tool.call({ tool: 'Bash', command: 'run', description: 'Wait for the gate', run_in_background: true } as never)
   await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'Wait for the gate' }] } as never)
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
   // 对照's 3 minutes, scaled no lower than half: late at 1m 30s, asked once; the answer, 4 more
@@ -866,6 +870,7 @@ test('every step done but a background task still running: not finished until it
   await tasks('plan', { goal: '功能合并派给 Codex', tasks: [{ title: '写目标书' }, { title: '发车 stage 3' }] })
   await clock.advance(30000)
   await tasks('done', { id: 1 })
+  await $.tool.call({ tool: 'Bash', command: 'codex exec stage3', description: 'Codex stage 3', run_in_background: true } as never)
   await tasks('done', { id: 2 })
   await stop(1)
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
@@ -925,7 +930,8 @@ test('background work the plan started is a step of its own: on the row, in the 
   expect(v.row).toContain('3/4 · 75%')
   expect(v.row).not.toContain('完成')
   expect(v.card).toContain('后台 · 在 57611 端口起工作台')
-  expect(v.card).not.toContain('上一个计划留下的服务器')
+  // the old server is listed last, outside the plan, and not counted
+  expect(v.card).toContain('计划外 · 上一个计划留下的服务器')
   // its clock runs from the call that launched it (2m 10s ago), not from when the turn stopped
   expect(v.card).toContain('2m 10s')
   // the server is stopped; the turn it wakes ends with only the old one left: the plan is finished
@@ -1086,12 +1092,18 @@ test('on the desktop, other chats show as a small area after the row, its own ca
   await term.unmount()
 })
 
-test('background work still inside the step that started it is that step\'s, not counted twice', async ($, on) => {
+test('background work still inside the step that started it is set under that step, listed and not counted twice', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('classic.Stop', () => ({}))
+  // the chat's log: a test run launched in the background before an update reloaded the mod
+  let log = ''
+  on('fs.read', (_$, e) => {
+    if (String((e as { path: string }).path).endsWith('chat.jsonl')) return { value: log }
+    throw new Error('no such file')
+  })
   const clock = mock.clock(on)
   const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
   const view = async () => {
@@ -1101,7 +1113,9 @@ test('background work still inside the step that started it is that step\'s, not
     return { row: String(imgs[0]!.props!.alt), card: String(imgs.at(-1)!.props!.source) }
   }
   const review = { id: 'cx', type: 'shell', status: 'running', description: 'Codex 外审', command: 'codex exec review < /dev/null' }
-  const stop = (list: object[]) => $.classic.Stop({ stop_hook_active: false, background_tasks: list } as never)
+  const tests = { id: 'ui7', type: 'shell', status: 'running', description: '重跑界面测试', command: 'python -m pytest docs/acceptance' }
+  const stray = { id: 'zz9', type: 'shell', status: 'running', description: '来源不明', command: 'sleep 9999' }
+  const stop = (list: object[]) => $.classic.Stop({ stop_hook_active: false, transcript_path: '/tmp/chat.jsonl', background_tasks: list } as never)
   // what the skills chat did (2026-10-09): its step "Codex 外审一轮" runs the review in the background
   await clock.advance(60000)
   await $.turn.start({ text: '外审', turnId: 't1' })
@@ -1109,28 +1123,41 @@ test('background work still inside the step that started it is that step\'s, not
   await clock.advance(60000)
   await tasks('done', { id: 1 })
   await $.tool.call({ tool: 'Bash', command: review.command, description: review.description, run_in_background: true } as never)
-  await stop([review])
+  await clock.advance(5000)
+  // and, like neo-mate the same day, a second job in parallel under the same step, launched before
+  // an update reloaded the mod: the log alone has it
+  const at = 125000 // the mock clock starts at 0: 60s + 60s + 5s in
+  log = [JSON.stringify({ type: 'user', timestamp: new Date(at).toISOString(), message: { content: [{ type: 'tool_result', content: 'Command running in background with ID: ui7. Output is being written to …' }] } })].join('\n')
+  await stop([review, tests, stray])
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
   let v = await view()
-  // the step's ▶ and clock already stand for the review: 1/3, no extra row
+  // the step's ▶ and clock stand for its work: 1/3, and both jobs are listed under it, not as steps
   expect(v.row).toContain('1/3')
   expect(v.card).not.toContain('后台 ·')
-  // a task with no launch on record (it began before an update reloaded the mod) seen while the
-  // step runs is the step's too
-  await clock.advance(10000)
-  await $.turn.start({ text: '', turnId: 't1b' })
-  await stop([review, { id: 'cx2', type: 'shell', status: 'running', description: '更新前起的', command: 'codex exec again' }])
-  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1b' })
-  v = await view()
-  expect(v.row).toContain('1/3')
-  expect(v.card).not.toContain('后台 ·')
-  // the step is marked done while the review still runs: now it is work of its own
+  expect(v.card).toContain('↳')
+  expect(v.card).toContain('Codex 外审<')
+  expect(v.card).toContain('重跑界面测试')
+  // the one no record knows is listed outside the plan, never counted
+  expect(v.card).toContain('计划外 · 来源不明')
+  // the step is marked done while both jobs still run: now they are work of their own
   await clock.advance(60000)
   await $.turn.start({ text: '', turnId: 't2' })
   await tasks('done', { id: 2 })
-  await stop([review, { id: 'cx2', type: 'shell', status: 'running', description: '更新前起的', command: 'codex exec again' }])
+  await stop([review, tests, stray])
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
   v = await view()
   expect(v.row).toContain('2/5')
   expect(v.card).toContain('后台 · Codex 外审')
+  expect(v.card).toContain('后台 · 重跑界面测试')
+  expect(v.card).not.toContain('↳')
 })
+
+test('a background task filed under the plan before its start was known is put right once the log shows it', () => {
+  // neo-mate's plan file after 1.8.22 (2026-10-09): a server from an earlier plan, taken for new
+  // across an update and filed under the running step
+  const g = { startedAt: 1000, status: 'running', tasks: [{ id: 1, status: 'done', size: 'S' }, { id: 2, status: 'done', size: 'S' }], bg: [{ id: 'srv', title: '起工作台', status: 'running', startedAt: 1500, step: 2 }] } as never
+  expect(foldBackground(g, [{ id: 'srv', type: 'shell', status: 'running', description: '起工作台' }], new Map([['srv', { at: 400, step: 0 }]]), 2000)).toBe(0)
+  expect((g as { bg: { outside?: boolean }[] }).bg[0]!.outside).toBe(true)
+  expect(shown(g).doneN + '/' + shown(g).n).toBe('2/2')
+})
+

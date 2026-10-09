@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, shown, ownWork, foldBackground, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, shown, ownWork, foldBackground, stepAt, launchInLog, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -75,10 +75,26 @@ function visibleTasks(g) {
   return g.tasks.filter((t) => !t.replaced && t.status !== 'dropped')
 }
 
-// The plan's background work as steps of the card, after the plan's own: running ▶ with its clock,
-// done ✓ with what it took
-function bgSteps(g) {
-  return ownWork(g).map((b) => ({ id: 'bg-' + b.id, title: '后台 · ' + b.title, status: b.status === 'running' ? 'active' : 'done', startedAt: b.startedAt, doneAt: b.doneAt }))
+// The card's rows: each step, with the background work still running inside it set under it (listed,
+// not counted); then background work that outlived its step, a step of its own (running ▶ with its
+// clock, done ✓ with what it took); then work running outside the plan (started before it, or of
+// unknown start), listed last and never counted (Neo, 2026-10-09: three background tasks ran in
+// neo-mate and the card showed one step at work)
+function cardRows(g) {
+  const bg = Array.isArray(g.bg) ? g.bg : []
+  const clock = (b) => (b.startedAt ? duration(Math.max(0, now - b.startedAt)) : '')
+  const rows = []
+  for (const t of visibleTasks(g)) {
+    rows.push(t)
+    for (const b of bg) {
+      if (b.step === t.id && b.status === 'running' && !b.own && !b.outside) rows.push({ id: 'bg-' + b.id, title: b.title, status: 'active', sub: true, op: true, tail: clock(b) })
+    }
+  }
+  for (const b of ownWork(g)) rows.push({ id: 'bg-' + b.id, title: '后台 · ' + b.title, status: b.status === 'running' ? 'active' : 'done', bgRow: true, startedAt: b.startedAt, doneAt: b.doneAt })
+  for (const b of bg) {
+    if (b.outside && b.status === 'running') rows.push({ id: 'bg-' + b.id, title: '计划外 · ' + b.title, status: 'outside', op: true, tail: clock(b) })
+  }
+  return rows
 }
 
 async function save($) {
@@ -396,17 +412,24 @@ export function register(on) {
     const list = e && Array.isArray(e.background_tasks) ? e.background_tasks : []
     const at = await $.clock.now()
     // when each task started and under which step: the background tool call that launched it (the
-    // same command, else the same description), else now, the first time a turn left it running
+    // same command, else the same description); for one launched before this process loaded (an
+    // update reloads the mod), the log's tool result that names its id; else unknown
+    let log = null
     for (const b of list) {
       const id = String(b.id)
       if (bgSeen.has(id)) continue
       const cmd = String(b.command || '').slice(0, 200)
       const i = bgLaunches.findIndex((l) => (cmd && l.command.slice(0, 200) === cmd) || (!cmd && l.description && l.description === String(b.description || '')))
-      // no launch on record (it began before this process loaded, e.g. across an update): it belongs
-      // to the step running now, if any
-      const active = G && G.status === 'running' ? (G.tasks.find((t) => t.status === 'active' && !t.replaced) || {}).id || 0 : 0
-      bgSeen.set(id, i >= 0 ? { at: bgLaunches[i].at, step: bgLaunches[i].step } : { at, step: active })
-      if (i >= 0) bgLaunches.splice(i, 1)
+      if (i >= 0) {
+        bgSeen.set(id, { at: bgLaunches[i].at, step: bgLaunches[i].step })
+        bgLaunches.splice(i, 1)
+        continue
+      }
+      if (log === null) {
+        try { log = transcriptPath ? await $.fs.read(transcriptPath) : '' } catch { log = '' }
+      }
+      const from = launchInLog(log, id)
+      bgSeen.set(id, from ? { at: from, step: G ? stepAt(G, from) : 0 } : { at, step: 0, unknown: true })
     }
     // a running plan counts only the work it started; that work shows on its row and card as steps
     if (G && G.status === 'running') {
@@ -754,10 +777,12 @@ const ICON = { done: '✓', active: '▶', pending: '○', dropped: '×' }
 
 function taskRow(el, t, width) {
   const { Box, Text } = el
-  const tail = mask(taskTail(t))
+  const tail = mask(t.op ? t.tail : taskTail(t))
   const title = mask(t.title)
   const icon = ICON[t.status] || '○'
-  const lead = t.status === 'done'
+  const lead = t.sub
+    ? Text({ dimColor: true, children: ['  ↳ '] })
+    : t.status === 'done'
     ? Text({ color: 'green', children: [`${icon} `] })
     : t.status === 'active'
       ? Text({ color: 'cyan', bold: true, children: [`${icon} `] })
@@ -781,7 +806,7 @@ function drawRow(el, e) {
   if (!r) return null // a chat that has done nothing yet: no row at all
   const desk = e.surface === 'desktop' || e.surface === 'mobile'
   const width = Math.max(40, (e.props && e.props.bodyColumns) || 100)
-  const planned = G && (r.state === 'running' || r.state === 'planning' || r.state === 'done' || r.state === 'stopped') ? [...visibleTasks(G), ...bgSteps(G)] : []
+  const planned = G && (r.state === 'running' || r.state === 'planning' || r.state === 'done' || r.state === 'stopped') ? cardRows(G) : []
   // no plan to show: the card lists this turn's latest operations instead, so hovering always
   // shows what Claude is doing, even in a chat where Claude never made a plan
   const steps = planned.length ? planned : (r.state === 'working' || r.state === 'last') ? ops.map(opStep) : []
@@ -803,7 +828,7 @@ function drawRow(el, e) {
       const share = LINE.w - LINE.others
       const mine = [el.Svg({ source: cropSvg(fitted, 0, share), alt, width: share, height: fitted.height })]
       if (steps.length) {
-        const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status === 'active' && !busy(G) ? 'paused' : t.status, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
+        const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status === 'active' && !busy(G) && !t.sub && !t.bgRow ? 'paused' : t.status, sub: !!t.sub, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
         mine.push(pop(card, steps.map((t) => t.title).join(', ')))
       }
       const rest = others.filter((g) => g.sessionId !== sessionId)
@@ -833,7 +858,7 @@ function drawRow(el, e) {
     // the frame is always FRAME.w wide. So the keyed Box is exactly FRAME.w wide, centred: the
     // row is drawn into it, padded with blank room when narrower, and when wider the parts that
     // stick out are drawn as two more pieces of the same image on either side, outside the hover.
-    const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status === 'active' && !busy(G) ? 'paused' : t.status, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
+    const card = stepsSvg(steps.slice(0, 20).map((t) => ({ status: t.status === 'active' && !busy(G) && !t.sub && !t.bgRow ? 'paused' : t.status, sub: !!t.sub, title: mask(t.title), tail: mask(t.op ? t.tail : taskTail(t)) })))
     const pop = el.Box({ position: 'absolute', bottom: 1, left: 0, display: 'none', hover: { display: 'flex' }, children: [el.Svg({ source: card.svg, alt: steps.map((t) => t.title).join(', '), width: card.width, height: card.height })] })
     const span = Math.max(row.width, FRAME.w)
     const pad = (span - row.width) / 2
@@ -861,7 +886,9 @@ const STEP_HUE = { done: '#72cf9f' }
 function stepRow(el, t, width) {
   const { Box, Text } = el
   const tail = mask(t.op ? t.tail : taskTail(t))
-  const lead = t.status === 'done'
+  const lead = t.sub
+    ? Text({ dimColor: true, children: ['  ↳ '] })
+    : t.status === 'done'
     ? Text({ color: STEP_HUE.done, children: ['✓ '] })
     : t.status === 'active'
       ? Text({ children: ['▶ '] })
@@ -929,7 +956,7 @@ function drawPane(el, width, surface) {
     const stats = statsLine(G, p)
     if (stats) rows.push(Text({ dimColor: true, children: [stats] }))
     rows.push(Text({ children: [' '] }))
-    const tasks = [...G.tasks.filter((t) => !t.replaced), ...bgSteps(G)]
+    const tasks = cardRows(G)
     if (!tasks.length) rows.push(Text({ dimColor: true, children: ['No task plan yet.'] }))
     for (const t of tasks) rows.push(taskRow(el, t, width))
     if (G.check && G.check.reason) {
@@ -953,6 +980,6 @@ function plainText() {
   if (!G) return '这个对话还没有任务计划。'
   const p = shown(G)
   const lines = [`${label(G)}: ${mask(G.title)}`, `${headline(G, p)}  ${bar(p.fraction, 30)}`, statsLine(G, p)]
-  for (const t of [...G.tasks.filter((x) => !x.replaced), ...bgSteps(G)]) lines.push(`${ICON[t.status] || '○'} ${mask(t.title)}  ${mask(taskTail(t))}`)
+  for (const t of cardRows(G)) lines.push(`${t.sub ? '  ↳' : ICON[t.status] || '○'} ${mask(t.title)}  ${mask(t.op ? t.tail : taskTail(t))}`)
   return lines.filter(Boolean).join('\n')
 }

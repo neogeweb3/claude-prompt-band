@@ -88,7 +88,7 @@ export function progress(goal) {
 // run in the background under its own step "Codex 外审一轮" read right as 8/11). Each such task weighs
 // what an average step of the plan weighs, and is done once it no longer runs. The time left still
 // comes from the steps alone: a background task gives no minutes.
-export const ownWork = (goal) => (Array.isArray(goal.bg) ? goal.bg : []).filter((b) => b.own)
+export const ownWork = (goal) => (Array.isArray(goal.bg) ? goal.bg : []).filter((b) => b.own && !b.outside)
 
 export function shown(goal) {
   const p = progress(goal)
@@ -102,29 +102,73 @@ export function shown(goal) {
 }
 
 // Fold what the last turn left running (classic.Stop's background_tasks: only work still in flight)
-// into the plan's own list. `seen` maps each task id to { at, step }: when it started (the background
-// tool call that launched it, else when first seen) and the step running then. Only tasks started
-// since the plan began are the plan's, so a server left on by an earlier plan does not hold every
-// later one open. A task still running once its step is no longer running (done, dropped, or none
-// at all) becomes work of its own (`own`, kept from then on). A task of the plan's that no longer
-// runs is done. Returns how many of the plan's tasks still run.
+// into the plan's own list. `seen` maps each task id to { at, step, unknown }: when it started and
+// the step running then (from the background tool call that launched it, or the log's record of
+// it), or `unknown` when neither is on record. A task started before the plan began, or of unknown
+// start, is `outside` the plan: listed in its card, never counted, never holding it open (a server
+// left on by an earlier plan; 2026-10-09, after an update reloaded the mod, one such server was
+// taken for new and filed under the running step). A task of the plan's still running once its step
+// is no longer running (done, dropped, or none at all) becomes work of its own (`own`, kept from
+// then on). A task that no longer runs is done. Returns how many of the plan's tasks still run.
 export function foldBackground(goal, list, seen, now) {
   const running = new Set(list.map((b) => String(b.id)))
   const bg = Array.isArray(goal.bg) ? goal.bg : (goal.bg = [])
   for (const b of list) {
     const id = String(b.id)
-    if (bg.some((x) => x.id === id)) continue
-    const from = seen.get(id) || { at: now, step: 0 }
-    if (from.at < goal.startedAt) continue
-    bg.push({ id, title: String(b.description || b.command || b.type || '后台任务').replace(/\s+/g, ' ').trim().slice(0, 80), kind: String(b.type || ''), status: 'running', startedAt: from.at, step: from.step || 0 })
+    const known = bg.find((x) => x.id === id)
+    if (known) {
+      // filed before its start was on record (1.8.22 took a server from an earlier plan for new
+      // across an update): what the log says now puts it right
+      const from = seen.get(id)
+      if (from && !from.unknown && !known.outside) {
+        known.startedAt = from.at
+        if (from.at < goal.startedAt) { known.outside = true; delete known.own }
+      }
+      continue
+    }
+    const from = seen.get(id) || { at: now, step: 0, unknown: true }
+    const outside = !!from.unknown || from.at < goal.startedAt
+    bg.push({ id, title: String(b.description || b.command || b.type || '后台任务').replace(/\s+/g, ' ').trim().slice(0, 80), kind: String(b.type || ''), status: 'running', startedAt: from.unknown ? 0 : from.at, step: from.step || 0, ...(outside ? { outside: true } : {}) })
   }
   for (const x of bg) {
     if (x.status !== 'running') continue
     if (!running.has(x.id)) { Object.assign(x, { status: 'done', doneAt: now }); continue }
+    if (x.outside) continue
     const step = x.step ? goal.tasks.find((t) => t.id === x.step) : null
     if (!step || step.status !== 'active') x.own = true
   }
-  return bg.filter((x) => x.status === 'running').length
+  return bg.filter((x) => x.status === 'running' && !x.outside).length
+}
+
+// The step of the plan running at time `at`, or 0
+export function stepAt(goal, at) {
+  const t = goal.tasks.find((x) => !x.replaced && x.startedAt && x.startedAt <= at && (x.status === 'active' || (x.doneAt && at < x.doneAt)))
+  return t ? t.id : 0
+}
+
+// When a background task was launched, read from the chat's log: the tool result that names its id
+// ("Command running in background with ID: …"); 0 when the log does not have it
+export function launchInLog(text, id) {
+  if (!text || !id) return 0
+  let from = 0
+  for (;;) {
+    const i = text.indexOf(id, from)
+    if (i < 0) return 0
+    const start = text.lastIndexOf('\n', i) + 1
+    const end = text.indexOf('\n', i)
+    from = end < 0 ? text.length : end
+    try {
+      const d = JSON.parse(text.slice(start, end < 0 ? undefined : end))
+      const content = d && d.message && d.message.content
+      if (Array.isArray(content) && content.some((c) => c && c.type === 'tool_result' && JSON.stringify(c.content || '').includes(id))) {
+        const at = Date.parse(d.timestamp)
+        if (at) return at
+      }
+    } catch {
+      // not a whole JSON line, or not this kind; read on
+    }
+    if (end < 0) return 0
+  }
 }
 
 // The time left for the whole plan, the way evidence-based scheduling does it (FogBugz, Joel
