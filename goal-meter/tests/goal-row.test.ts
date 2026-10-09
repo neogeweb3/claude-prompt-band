@@ -1144,15 +1144,34 @@ test('background work still inside the step that started it is set under that st
   expect(v.card).toContain('重跑界面测试')
   // the one no record knows is listed outside the plan, never counted
   expect(v.card).toContain('计划外 · 来源不明')
-  // the step is marked done while both jobs still run: now they are work of their own
+  // step 2 is marked done while both jobs still run and step 3 starts: they go under step 3, the step
+  // running now (neo-mate, 2026-10-09: a test run launched eight seconds before the move read as a
+  // step of its own, 3/7)
   await clock.advance(60000)
   await $.turn.start({ text: '', turnId: 't2' })
   await tasks('done', { id: 2 })
   await stop([review, tests, stray])
   await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
   v = await view()
-  expect(v.row).toContain('2/5')
-  expect(v.card).toContain('后台 · Codex 外审')
+  expect(v.row).toContain('2/3')
+  expect(v.card).not.toContain('后台 ·')
+  expect(v.card).toContain('↳')
+  // the review ends while step 3 runs: it was a step's work, gone from the card, never counted
+  await clock.advance(60000)
+  await $.turn.start({ text: '', turnId: 't3' })
+  await stop([tests, stray])
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't3' })
+  v = await view()
+  expect(v.row).toContain('2/3')
+  expect(v.card).not.toContain('Codex 外审<')
+  // every step done and the test run still going: now it is a step of its own, 3/4
+  await clock.advance(60000)
+  await $.turn.start({ text: '', turnId: 't4' })
+  await tasks('done', { id: 3 })
+  await stop([tests, stray])
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't4' })
+  v = await view()
+  expect(v.row).toContain('3/4')
   expect(v.card).toContain('后台 · 重跑界面测试')
   expect(v.card).not.toContain('↳')
 })
@@ -1164,6 +1183,10 @@ test('a background task filed under the plan before its start was known is put r
   expect(foldBackground(g, [{ id: 'srv', type: 'shell', status: 'running', description: '起工作台' }], new Map([['srv', { at: 400, step: 0 }]]), 2000)).toBe(0)
   expect((g as { bg: { outside?: boolean }[] }).bg[0]!.outside).toBe(true)
   expect(shown(g).doneN + '/' + shown(g).n).toBe('2/2')
+  // and a test run 1.8.21-1.8.25 made a step of its own though it ended while step 3 ran is step 3's
+  const h = { startedAt: 1000, status: 'running', tasks: [{ id: 1, status: 'done', size: 'S', startedAt: 1000, doneAt: 1500 }, { id: 2, status: 'active', size: 'S', startedAt: 1500 }], bg: [{ id: 'run', title: '跑 12 组', status: 'done', startedAt: 1490, doneAt: 1800, step: 1, own: true }] } as never
+  foldBackground(h, [], new Map(), 2000)
+  expect(shown(h).doneN + '/' + shown(h).n).toBe('1/2')
 })
 
 

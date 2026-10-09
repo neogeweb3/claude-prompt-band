@@ -75,8 +75,9 @@ function visibleTasks(g) {
   return g.tasks.filter((t) => !t.replaced && t.status !== 'dropped')
 }
 
-// The card's rows: each step, with the background work still running inside it set under it (listed,
-// not counted); then background work that outlived its step, a step of its own (running ▶ with its
+// The card's rows: each step, the plan's background work still running set under the step running now,
+// whichever launched it (listed, not counted); then background work that ran with no step running, a
+// step of its own (running ▶ with its
 // clock, done ✓ with what it took); then work running outside the plan (started before it, or of
 // unknown start), listed last and never counted (Neo, 2026-10-09: three background tasks ran in
 // neo-mate and the card showed one step at work)
@@ -87,7 +88,7 @@ function cardRows(g) {
   for (const t of visibleTasks(g)) {
     rows.push(t)
     for (const b of bg) {
-      if (b.step === t.id && b.status === 'running' && !b.own && !b.outside) rows.push({ id: 'bg-' + b.id, title: b.title, status: 'active', sub: true, op: true, tail: clock(b) })
+      if (t.status === 'active' && b.status === 'running' && !b.outside) rows.push({ id: 'bg-' + b.id, title: b.title, status: 'active', sub: true, op: true, tail: clock(b) })
     }
   }
   for (const b of ownWork(g)) rows.push({ id: 'bg-' + b.id, title: '后台 · ' + b.title, status: b.status === 'running' ? 'active' : 'done', bgRow: true, startedAt: b.startedAt, doneAt: b.doneAt })

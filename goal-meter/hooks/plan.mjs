@@ -88,7 +88,14 @@ export function progress(goal) {
 // run in the background under its own step "Codex 外审一轮" read right as 8/11). Each such task weighs
 // what an average step of the plan weighs, and is done once it no longer runs. The time left still
 // comes from the steps alone: a background task gives no minutes.
-export const ownWork = (goal) => (Array.isArray(goal.bg) ? goal.bg : []).filter((b) => b.own && !b.outside)
+// A step of the plan is running now
+const anyActive = (goal) => goal.tasks.some((t) => t.status === 'active' && !t.replaced)
+
+// The plan's background work that counts as steps of its own: work still running while no step of the
+// plan runs, and work that had ended so (\`own\`, settled when it ended). Work running while a step runs
+// belongs to that step, whichever step launched it (Neo, 2026-10-09: a test run started eight seconds
+// before Claude moved from step 2 to step 3 read as a step of its own, 3/7, and 有点懵逼)
+export const ownWork = (goal) => (Array.isArray(goal.bg) ? goal.bg : []).filter((b) => !b.outside && (b.status === 'running' ? !anyActive(goal) : b.own))
 
 export function shown(goal) {
   const p = progress(goal)
@@ -121,12 +128,11 @@ export function foldBackground(goal, list, seen, now) {
     bg.push({ id, title: String(b.description || b.command || b.type || '后台任务').replace(/\s+/g, ' ').trim().slice(0, 80), kind: String(b.type || ''), status: 'running', startedAt: from.unknown ? 0 : from.at, step: from.step || 0, ...(outside ? { outside: true } : {}) })
   }
   placeBackground(goal, seen)
+  const active = anyActive(goal)
   for (const x of bg) {
     if (x.status !== 'running') continue
-    if (!running.has(x.id)) { Object.assign(x, { status: 'done', doneAt: now }); continue }
-    if (x.outside) continue
-    const step = x.step ? goal.tasks.find((t) => t.id === x.step) : null
-    if (!step || step.status !== 'active') x.own = true
+    // it ended: a step of its own only if it ran on with no step of the plan running
+    if (!running.has(x.id)) Object.assign(x, { status: 'done', doneAt: now, own: !x.outside && !active })
   }
   return bg.filter((x) => x.status === 'running' && !x.outside).length
 }
@@ -136,6 +142,9 @@ export function foldBackground(goal, list, seen, now) {
 // the plan if that was before it began
 export function placeBackground(goal, seen) {
   for (const x of Array.isArray(goal.bg) ? goal.bg : []) {
+    // 1.8.21-1.8.25 made work that outlived the step launching it a step of its own for good; work
+    // that ended while some step ran was that step's
+    if (x.status === 'done' && x.own && x.doneAt && stepAt(goal, x.doneAt - 1)) delete x.own
     const from = seen.get(x.id)
     if (x.status !== 'running' || x.outside || !from || from.unknown) continue
     x.startedAt = from.at
