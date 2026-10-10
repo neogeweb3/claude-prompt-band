@@ -191,8 +191,12 @@ async function registerCommand($) {
   }
 }
 
+// Where a new plan's own background work begins: the start of the turn it is made in, or the end of
+// an earlier plan within that turn (work launched before then was that plan's)
+const planSince = () => Math.max(working ? turnAt : now, (G && G.endedAt) || 0)
+
 async function startGoal($, condition) {
-  G = newGoal({ sessionId, condition, now, cwd })
+  G = newGoal({ sessionId, condition, now, cwd, since: planSince() })
   hidden = false
   nudged = false
   callsWithoutPlan = 0
@@ -235,7 +239,7 @@ async function serveTool($, e) {
     // tracked like a /goal, named after the task Claude gave, else its first step; whether the chat
     // was already asked for minutes carries over
     const minutesAsked = !!(G && G.minutesAsked)
-    G = newGoal({ sessionId, condition: named || first.title, now, cwd, kind: 'plan' })
+    G = newGoal({ sessionId, condition: named || first.title, now, cwd, kind: 'plan', since: planSince() })
     if (minutesAsked) G.minutesAsked = true
     hidden = false
   }

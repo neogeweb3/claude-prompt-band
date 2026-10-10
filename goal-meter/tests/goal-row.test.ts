@@ -1371,3 +1371,60 @@ test('a background task\'s end is read from the notification it woke the session
   expect(endInLog(log, 'other', 0)).toBe(0)
   expect(endInLog('{"timestamp": <task-id>x</task-id>', 'x', 0)).toBe(0)
 })
+
+test('work launched in the turn that makes the plan is the plan\'s: set under its step, the row running with its time left', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const sec = (n: number) => clock.advance(n * 1000)
+  const job = (id: string, description: string) => ({ id, type: 'shell', status: 'running', description, command: 'run ' + id })
+  const launch = (j: { id: string, description: string }) => $.tool.call({ tool: 'Bash', command: 'run ' + j.id, description: j.description, run_in_background: true } as never)
+  const view = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const imgs = await rowImgs(ui)
+    const alt = imgs.map((i) => String(i.props!.alt)).join(' ')
+    const src = String(imgs.at(-1)!.props!.source)
+    await ui.unmount()
+    return { alt, rows: [...src.matchAll(/>([^<>]+)</g)].map((m) => m[1]!.trim()).filter((x) => x && !x.includes('{')) }
+  }
+  // neo-mate 2026-10-10 03:52-03:57: an earlier plan done, then in one turn three Codex runs sent
+  // off and a plan made whose first step waits on them
+  await sec(60)
+  await $.turn.start({ text: '', turnId: 't0' })
+  await tasks('plan', { goal: '上一件事', tasks: [{ title: '查', minutes: 3 }] })
+  await $.tool.call({ tool: 'Bash', command: 'run old', description: '上一件事的服务器', run_in_background: true } as never)
+  await tasks('done', { id: 1 })
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [job('old', '上一件事的服务器')] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't0' })
+  await sec(60)
+  const r1 = job('r1', 'Dispatch Codex to implement round-1 UI (R1)')
+  const r2 = job('r2', 'Dispatch Codex to implement suggested replies (R2)')
+  const mock2 = job('m2', 'Dispatch Codex stage 1 for round-2 design mockups')
+  await $.turn.start({ text: '', turnId: 't1' })
+  await sec(178); await launch(r1)
+  await sec(67); await launch(r2)
+  await sec(46); await launch(mock2)
+  await sec(21)
+  await tasks('plan', { goal: '第一轮实施 + 第二轮样稿', tasks: [{ title: '等三个 Codex 交付（后台）', size: 'L', minutes: 120 }, { title: '第二轮样稿截图给 Neo', minutes: 15 }, { title: 'R1/R2 合并跑三道门禁', minutes: 60 }] })
+  await sec(9)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [job('old', '上一件事的服务器'), r1, r2, mock2] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  await sec(30)
+  const { alt, rows } = await view()
+  // the three runs sit under the step waiting on them, ↳ with their clocks; the server an earlier plan
+  // left on stays 计划外
+  const at = (t: string) => rows.findIndex((r) => r.startsWith(t))
+  for (const t of ['Dispatch Codex to implement roun', 'Dispatch Codex to implement sugg', 'Dispatch Codex stage 1']) {
+    expect(at(t)).toBeGreaterThan(at('等三个 Codex 交付'))
+    expect(rows[at(t) - 1]).toBe('↳')
+  }
+  expect(rows.some((r) => r.startsWith('计划外 · 上一件事的服务器'))).toBe(true)
+  expect(rows.some((r) => r.startsWith('计划外 · Dispatch'))).toBe(false)
+  // the step runs on while they do, and the row says how long is left
+  expect(rows[at('等三个 Codex 交付') - 1]).toBe('▶')
+  expect(alt).toMatch(/剩约 \S+/)
+})

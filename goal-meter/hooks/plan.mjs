@@ -15,7 +15,7 @@ export function titleOf(condition) {
   return line.length > 160 ? line.slice(0, 159) + '…' : line
 }
 
-export function newGoal({ sessionId, condition, now, cwd, kind = 'goal' }) {
+export function newGoal({ sessionId, condition, now, cwd, kind = 'goal', since = 0 }) {
   return {
     sessionId,
     kind,
@@ -23,6 +23,10 @@ export function newGoal({ sessionId, condition, now, cwd, kind = 'goal' }) {
     condition: String(condition || '').slice(0, 2000),
     cwd: cwd || '',
     startedAt: now,
+    // background work launched from here on is the plan's: the turn it was made in may have launched
+    // the work it waits on (neo-mate 2026-10-10: three Codex runs sent off 2m 14s to 21s before the
+    // plan whose first step was 等三个 Codex 交付, all filed as 计划外, the row paused with no time left)
+    since: Math.min(now, since || now),
     planAt: 0,
     endedAt: 0,
     status: 'running',
@@ -111,8 +115,8 @@ export function shown(goal) {
 // Fold what the last turn left running (classic.Stop's background_tasks: only work still in flight)
 // into the plan's own list. `seen` maps each task id to { at, step, unknown }: when it started and
 // the step running then (from the background tool call that launched it, or the log's record of
-// it), or `unknown` when neither is on record. A task started before the plan began, or of unknown
-// start, is `outside` the plan: listed in its card, never counted, never holding it open (a server
+// it), or `unknown` when neither is on record. A task started before the turn the plan was made in (`since`;
+// or before an earlier plan of that turn ended), or of unknown start, is `outside` the plan: listed in its card, never counted, never holding it open (a server
 // left on by an earlier plan; 2026-10-09, after an update reloaded the mod, one such server was
 // taken for new and filed under the running step). A task of the plan's still running once its step
 // is no longer running (done, dropped, or none at all) becomes work of its own (`own`, kept from
@@ -125,7 +129,7 @@ export function foldBackground(goal, list, seen, now, ended = new Map()) {
     const id = String(b.id)
     if (bg.some((x) => x.id === id)) continue
     const from = seen.get(id) || { at: now, step: 0, unknown: true }
-    const outside = !!from.unknown || from.at < goal.startedAt
+    const outside = !!from.unknown || from.at < (goal.since || goal.startedAt)
     bg.push({ id, title: String(b.description || b.command || b.type || '后台任务').replace(/\s+/g, ' ').trim().slice(0, 80), kind: String(b.type || ''), status: 'running', startedAt: from.unknown ? 0 : from.at, step: from.step || 0, ...(outside ? { outside: true } : {}) })
   }
   placeBackground(goal, seen)
@@ -149,7 +153,7 @@ export function placeBackground(goal, seen) {
     const from = seen.get(x.id)
     if (x.status !== 'running' || x.outside || !from || from.unknown) continue
     x.startedAt = from.at
-    if (from.at < goal.startedAt) { x.outside = true; delete x.own }
+    if (from.at < (goal.since || goal.startedAt)) { x.outside = true; delete x.own }
   }
 }
 
