@@ -217,9 +217,13 @@ function expectation(goal) {
   const took = (t) => t.doneAt - t.startedAt
   const est = timed.filter((t) => t.minutes)
   const said = est.reduce((a, t) => a + t.minutes * 60000, 0)
-  // held to between half and twice: three steps estimated at 9 minutes that took 49 seconds (this
-  // repo's own chat, 2026-10-08) would otherwise cut every estimate left to a tenth
-  const scale = said > 0 && said >= CORRECT_AFTER ? Math.min(2, Math.max(0.5, est.reduce((a, t) => a + took(t), 0) / said)) : 1
+  // held to between a quarter and twice. Claude's minutes run long: in the ledger of 2026-10-10
+  // (201 steps, 6 chats) a step said at under 30 minutes took a tenth of them at the median, one at
+  // 30 or more about two thirds. Replayed on that ledger (the steps done so far in a chat predicting
+  // its next three to five), a floor of a half came out 3.8 times off, a quarter 2.2, a tenth 1.6;
+  // but a tenth from the short steps would cut a long one after them far too short, and across all
+  // of a chat's steps left the quarter is about as good as the half (2.4 against 2.2)
+  const scale = said > 0 && said >= CORRECT_AFTER ? Math.min(2, Math.max(0.25, est.reduce((a, t) => a + took(t), 0) / said)) : 1
   const sized = timed.filter((t) => !t.minutes)
   const w = sized.reduce((a, t) => a + weight(t), 0)
   const pace = sized.length >= 2 && w ? sized.reduce((a, t) => a + took(t), 0) / w : 0

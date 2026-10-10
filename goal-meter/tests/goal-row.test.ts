@@ -587,6 +587,25 @@ test('every step\'s minutes from Claude, scaled by how its estimates held up in 
   expect(await run([2, 5, 5, 5, 18, 2])).toEqual(['12m', '4m'])
 })
 
+test('minutes said far too long are scaled down to a quarter, no further', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  await clock.advance(60000)
+  await $.turn.start({ text: '做', turnId: 't' })
+  await tasks('plan', { goal: '门禁', tasks: ['读', '定', '写', '测', '门禁', '汇报'].map((title, i) => ({ title, size: 'SMMMLS'[i], minutes: [20, 20, 20, 20, 20, 4][i] })) })
+  for (const [id, ms] of [[1, 40000], [2, 324000], [3, 28000], [4, 239000]]) { await clock.advance(ms); await tasks('done', { id }) }
+  await clock.advance(35000)
+  const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+  const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+  await ui.unmount()
+  // 80 minutes said, 10m 31s taken (an eighth): held at a quarter, the gate's 20 read as 5 and
+  // 汇报's 4 as 1; 35 seconds into the gate, about 5m 25s left (at a half it read 11m)
+  expect(alt).toContain('剩约 5m')
+})
+
 test('a few one-minute steps that ran over do not stretch a long step\'s minutes', async ($, on) => {
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
   on('tool.call', () => ({ result: 'engine' }))
