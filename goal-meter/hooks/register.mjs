@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, endInLog, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -58,6 +58,7 @@ let pendingGoal = null
 let paneOpen = false
 let others = []
 let transcriptPath = ''
+let stopped = false // the running main turn's classic.Stop has come (none when it dies on an API error)
 const agentNames = new Map()
 const runningAgents = new Set()
 let rec = { on: false, strict: false }
@@ -264,19 +265,43 @@ async function serveTool($, e) {
 // When a background task was launched: the one line of the chat's log that names its id, found with
 // grep (logs reach 200 MB, and $.fs.read refuses anything over 4 MiB: neo-mate's 7 MB log read
 // nothing, 2026-10-09); 0 when the log does not have it
-async function launchAt($, id) {
+// The first few lines of the chat's log that hold `needle`, by grep: never the whole file read in
+// (logs reach 200 MB; $.fs.read refuses past 4 MiB)
+async function logLines($, needle, max) {
   const path = transcriptPath
-  if (!path || !/^[A-Za-z0-9_-]+$/.test(id)) return 0
+  if (!path) return ''
   const windows = /^[A-Za-z]:/.test(path)
   const argv = windows
-    ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `Select-String -LiteralPath '${path.replace(/'/g, "''")}' -SimpleMatch -Pattern 'ID: ${id}' | Select-Object -First 3 | ForEach-Object { $_.Line }`]
-    : ['grep', '-m', '3', '-F', `ID: ${id}`, path]
+    ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', `Select-String -LiteralPath '${path.replace(/'/g, "''")}' -SimpleMatch -Pattern '${needle}' | Select-Object -First ${max} | ForEach-Object { $_.Line }`]
+    : ['grep', '-m', String(max), '-F', needle, path]
   try {
     const r = await $.process.run(argv, { timeoutMs: 15000 })
-    return launchInLog(r.stdout || '', id)
+    return r.stdout || ''
   } catch {
-    return 0
+    return ''
   }
+}
+
+async function launchAt($, id) {
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return 0
+  return launchInLog(await logLines($, `ID: ${id}`, 3), id)
+}
+
+// when a background task ended, by the notification it woke the session with
+async function endAt($, id, after) {
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return 0
+  return endInLog(await logLines($, `<task-id>${id}</task-id>`, 3), id, after)
+}
+
+// The plan's background work that has ended, with when, from the log
+async function endedInLog($, ids) {
+  const ended = new Map()
+  for (const x of Array.isArray(G && G.bg) ? G.bg : []) {
+    if (x.status !== 'running' || !ids.has(x.id)) continue
+    const at = await endAt($, x.id, x.startedAt)
+    if (at) ended.set(x.id, at)
+  }
+  return ended
 }
 
 // The goal check's verdict. Its row reaches session.append with no content (the
@@ -420,6 +445,7 @@ export function register(on) {
     ops = []
     turnAt = now
     turnNudged = false
+    stopped = false
     $.ui.invalidate('ui.render')
     if (pendingGoal && (!G || G.startedAt < pendingGoal.at)) {
       const args = pendingGoal.args
@@ -468,8 +494,11 @@ export function register(on) {
       bgSeen.set(id, from ? { at: from, step: G ? stepAt(G, from) : 0 } : { at, step: 0, unknown: true })
     }
     // a running plan counts only the work it started; that work shows on its row and card as steps
+    stopped = true
     if (G && G.status === 'running') {
-      background = foldBackground(G, list, bgSeen, at)
+      const live = new Set(list.map((b) => String(b.id)))
+      const gone = new Set((Array.isArray(G.bg) ? G.bg : []).filter((x) => x.status === 'running' && !live.has(x.id)).map((x) => x.id))
+      background = foldBackground(G, list, bgSeen, at, await endedInLog($, gone))
       await save($)
     } else background = list.length
     backgroundWork = list.map((b) => clip(String(b.description || ''), 80)).filter(Boolean).slice(0, 5)
@@ -577,6 +606,13 @@ export function register(on) {
       runningAgents.delete(e.agentId)
       if (G && G.status === 'running') $.ui.invalidate('ui.render')
       return r
+    }
+    // a turn that died on an API error (an expired login, 2026-10-09) raises no classic.Stop, so
+    // what the last Stop left running would keep every clock going: what the log shows has ended
+    // since is done, at its own time
+    if (!stopped && G && G.status === 'running' && background) {
+      const ended = await endedInLog($, new Set(G.bg.filter((x) => x.status === 'running').map((x) => x.id)))
+      if (ended.size) background = foldBackground(G, G.bg.filter((x) => x.status === 'running' && !ended.has(x.id)), bgSeen, now, ended)
     }
     if (G && G.status === 'running') {
       G.active = false

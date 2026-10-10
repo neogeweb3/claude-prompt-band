@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { applyAction, autoPlan, foldBackground, ledgerLine, newGoal, shown } from '../hooks/plan.mjs'
+import { applyAction, autoPlan, endInLog, foldBackground, ledgerLine, newGoal, shown } from '../hooks/plan.mjs'
 import { CARD, FRAME, LINE, ROW_ROOM, SCALE, ago, cropSvg, rowOf, rowSpans, rowSvg, stepsSvg, textW } from '../hooks/row.mjs'
 
 const BAND = {
@@ -1310,4 +1310,64 @@ test('the running step lists the background work that ended in it too, so its ti
   expect(rows[at('后台重跑全量单测') + 1]).toBe('15m 00s')
   // the UI suite spent its time in step 1 and ended 7s into step 2: not listed under step 2
   expect(rows).not.toContain('第三次跑整套界面测试')
+})
+
+test('background work ends when its notification says, even when the turn after it dies with no Stop', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  let log = ''
+  on('process.run', grepLog(() => log))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const sec = (n: number) => clock.advance(n * 1000)
+  let t = 0
+  const notify = (id: string) => { log += JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: new Date(t).toISOString(), content: `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>` }) + '\n' }
+  const card = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const src = String((await rowImgs(ui)).at(-1)!.props!.source)
+    await ui.unmount()
+    return [...src.matchAll(/>([^<>]+)</g)].map((m) => m[1]!.trim()).filter((x) => x && !x.includes('{'))
+  }
+  // memory-vault's 「设计稿交 Codex 审」 (2026-10-09): a round of review run in the background ended
+  // at 09:17; the turn it woke died at 09:19 on an expired login, no Stop, until 20:23
+  const gate = { id: 'gate', type: 'shell', status: 'running', description: 'Run round-2 Codex spec gate', command: 'run gate' }
+  await sec(60); t += 60000
+  await $.turn.start({ text: '', turnId: 't1' })
+  await tasks('plan', { goal: '设计稿交 Codex 审', tasks: [{ title: '逐条核实并裁决', minutes: 12 }, { title: 'Codex Builds 实现', minutes: 120 }] })
+  await tasks('done', { id: 1 })
+  await $.tool.call({ tool: 'Bash', command: 'run gate', description: gate.description, run_in_background: true } as never)
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/chat.jsonl', background_tasks: [gate] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  await sec(330); t += 330000
+  notify('gate')
+  await $.turn.start({ text: '', turnId: 't2' })
+  await sec(144); t += 144000
+  await $.turn.complete({ reason: 'error', answer: '', durationMs: 144000, isAborted: false, turnId: 't2' })
+  await sec(11 * 3600); t += 11 * 3600000
+  const rows = await card()
+  // the review shows its own 5m 30s, ended; and with nothing left running the clocks stopped at 09:19
+  const at = rows.indexOf('Run round-2 Codex spec gate')
+  expect(rows[at - 1]).toBe('✓')
+  expect(rows[at + 1]).toBe('5m 30s')
+  expect(rows.join(' ')).not.toMatch(/11h/)
+  // a Stop that comes later, with the work gone from its list, keeps the notification's time
+  await $.turn.start({ text: '进度如何', turnId: 't3' })
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/chat.jsonl', background_tasks: [] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't3' })
+  const after = await card()
+  expect(after[after.indexOf('Run round-2 Codex spec gate') + 1]).toBe('5m 30s')
+})
+
+test('a background task\'s end is read from the notification it woke the session with', () => {
+  const line = (ts: string, text: string) => JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: ts, content: text })
+  // two lines of the real log, the second a copy of the first as the user's turn
+  const log = [line('2026-10-09T16:17:34.154Z', '<task-notification>\n<task-id>bqn0o2wrj</task-id>'), line('2026-10-09T16:17:34.164Z', '<task-id>bqn0o2wrj</task-id>')].join('\n')
+  expect(endInLog(log, 'bqn0o2wrj', 0)).toBe(Date.parse('2026-10-09T16:17:34.154Z'))
+  // never before the task started; nothing for another id or a broken line
+  expect(endInLog(log, 'bqn0o2wrj', Date.parse('2026-10-09T17:00:00Z'))).toBe(0)
+  expect(endInLog(log, 'other', 0)).toBe(0)
+  expect(endInLog('{"timestamp": <task-id>x</task-id>', 'x', 0)).toBe(0)
 })

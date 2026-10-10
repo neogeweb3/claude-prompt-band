@@ -116,8 +116,9 @@ export function shown(goal) {
 // left on by an earlier plan; 2026-10-09, after an update reloaded the mod, one such server was
 // taken for new and filed under the running step). A task of the plan's still running once its step
 // is no longer running (done, dropped, or none at all) becomes work of its own (`own`, kept from
-// then on). A task that no longer runs is done. Returns how many of the plan's tasks still run.
-export function foldBackground(goal, list, seen, now) {
+// then on). A task that no longer runs is done, at the time its notification gives (`ended`, from
+// the log) or else now. Returns how many of the plan's tasks still run.
+export function foldBackground(goal, list, seen, now, ended = new Map()) {
   const running = new Set(list.map((b) => String(b.id)))
   const bg = Array.isArray(goal.bg) ? goal.bg : (goal.bg = [])
   for (const b of list) {
@@ -132,7 +133,7 @@ export function foldBackground(goal, list, seen, now) {
   for (const x of bg) {
     if (x.status !== 'running') continue
     // it ended: a step of its own only if it ran on with no step of the plan running
-    if (!running.has(x.id)) Object.assign(x, { status: 'done', doneAt: now, own: !x.outside && !active })
+    if (!running.has(x.id)) Object.assign(x, { status: 'done', doneAt: Math.max(x.startedAt || 0, Math.min(now, ended.get(x.id) || now)), own: !x.outside && !active })
   }
   return bg.filter((x) => x.status === 'running' && !x.outside).length
 }
@@ -199,6 +200,24 @@ export function launchInLog(text, id) {
     }
     if (end < 0) return 0
   }
+}
+
+// When a background task really ended, from the chat's log: the notification it woke the session
+// with ("<task-id>ID</task-id>"), queued the moment it ended. The next Stop may come much later: a
+// round of review that ended at 09:17 was taken to end at 20:24, its turn having died on an expired
+// login at 09:19 with no Stop (2026-10-09). 0 if the log has none at or after `after`.
+export function endInLog(text, id, after) {
+  if (!text || !id) return 0
+  for (const line of text.split('\n')) {
+    if (!line.includes(`<task-id>${id}</task-id>`)) continue
+    try {
+      const at = Date.parse(JSON.parse(line).timestamp)
+      if (at && at >= (after || 0)) return at
+    } catch {
+      // not a whole JSON line; read on
+    }
+  }
+  return 0
 }
 
 // The time left for the whole plan, the way evidence-based scheduling does it (FogBugz, Joel
