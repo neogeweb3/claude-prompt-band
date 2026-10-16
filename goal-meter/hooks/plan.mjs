@@ -253,7 +253,7 @@ function expectation(goal) {
   // an answer to "how much longer" is already today's word: taken as given, never scaled (scaled,
   // a 4-minute answer read as 20 seconds, so the step was late again at once and asked again, every
   // 15 seconds: 6 forks in a row, 2026-10-08)
-  return (t) => (t.estAt ? t.estAt - t.startedAt + t.span : t.minutes ? t.minutes * 60000 * scale : pace * weight(t))
+  return (t) => (t.estAt && t.startedAt ? t.estAt - t.startedAt + t.span : t.minutes ? t.minutes * 60000 * scale : pace * weight(t))
 }
 
 // The running one counts down from what it is expected to take. Past that, it is late, and a late
@@ -325,6 +325,14 @@ export function reestimate(t, more, now) {
     overdueSaid: false,
     steady: before > 0 && Math.abs(after - before) <= STEADY * (before - t.startedAt),
   })
+}
+
+// A step that started by itself put back as if it never had: what it was asked and answered while
+// it ran goes too, its minutes back to Claude's first word. Kept, the answer's time counted from a
+// start of 0: a step put back after "19 more minutes" read 剩约 497823h (neo-fitness, 2026-10-16)
+function unstart(t) {
+  Object.assign(t, { status: 'pending', startedAt: 0, auto: false, minutes: t.said || t.minutes })
+  for (const k of ['estAt', 'span', 'asked', 'checks', 'overdueSaid', 'asks', 'lastAskAt', 'steady']) delete t[k]
 }
 
 // Minutes Claude expects a step to take: a number above 0, up to a day; 0 when not given
@@ -427,7 +435,7 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
       const pending = tasks.filter((t) => t.status === 'pending')
       if (auto && pending.length === 1 && tasks.length === 1) {
         Object.assign(pending[0], { status: 'active', startedAt: auto.startedAt })
-        Object.assign(auto, { status: 'pending', startedAt: 0, auto: false })
+        unstart(auto)
       }
       unstarted = tasks.filter((t) => t.status === 'pending').length
     }
@@ -462,7 +470,7 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
   // that started by itself, as if it never had.
   if (action === 'start') {
     const chosen = new Set(idsOf(input))
-    for (const t of goal.tasks) if (t.auto && t.status === 'active' && !chosen.has(t.id)) Object.assign(t, { status: 'pending', startedAt: 0, auto: false })
+    for (const t of goal.tasks) if (t.auto && t.status === 'active' && !chosen.has(t.id)) unstart(t)
   }
   if (action !== 'show') autoStart(goal, now)
   goal.updatedAt = now

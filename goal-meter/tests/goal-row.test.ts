@@ -1428,3 +1428,36 @@ test('work launched in the turn that makes the plan is the plan\'s: set under it
   expect(rows[at('等三个 Codex 交付') - 1]).toBe('▶')
   expect(alt).toMatch(/剩约 \S+/)
 })
+
+test('a step put back after it was asked how much longer forgets the answer, so the time left stays sane', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const sec = (n: number) => clock.advance(n * 1000)
+  const left = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+    await ui.unmount()
+    return (alt.match(/剩约 ([^，,]+?)(?: |$)/) || [])[1]
+  }
+  // neo-fitness 2026-10-16 07:30-07:39, at its own times; the mock clock starts at 0, a real one
+  // counts from 1970, and that is what a start of 0 subtracts
+  await clock.advance(Date.parse('2026-10-16T14:29:27Z'))
+  await sec(60)
+  await $.turn.start({ text: '做', turnId: 't' })
+  await tasks('plan', { goal: '记决定、归档、合第 12 件', tasks: [['记下三条决定', 2], ['仓库外的笔记拷进仓库', 3], ['归档做完的对话', 5], ['第 12 件卡片改字', 5], ['第 12 件完整门禁', 25], ['第 12 件合 main', 5]].map(([title, minutes]) => ({ title, size: 'S', minutes })) })
+  await sec(63); await tasks('done', { ids: [1, 2, 3] })
+  await sec(30); await tasks('done', { id: 4 })
+  await sec(73); await tasks('add', { tasks: [['验收②b 查食物', 30], ['验收②a 引导和改数据', 30], ['验收欠量补课', 30]].map(([title, minutes]) => ({ title, size: 'M', minutes })) })
+  // the gate, started by itself, is asked how much longer: 19 minutes
+  await sec(321); await tasks('start', { id: 5, minutes: 19 })
+  // Claude goes to step 7 first: the gate is put back as if it never started
+  await sec(49); await tasks('start', { id: 7, minutes: 15 })
+  const t = await left()
+  // 15 minutes for step 7 and the rest at Claude's first word, scaled down: well under two hours
+  expect(t).toBeDefined()
+  expect(t).not.toMatch(/\d{3,}h/)
+  expect(t).toMatch(/^\d+m$/)
+})
