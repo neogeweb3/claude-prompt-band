@@ -1088,7 +1088,7 @@ test('on the desktop, other chats show as a small area after the row, its own ca
   expect(inArea).toContain('2 在跑')
   // the chat with only its background work left: 2 of 3 and 后台在跑, not 2/2 and done
   expect(inArea).toContain('2/3')
-  expect(inArea).toContain('后台在跑')
+  expect(inArea).toContain('后台已跑 8m')
   // the card: the project, not the worktree's folder; time left for the running one, 完成 for the done one
   expect(inArea).toContain('neo-fitness')
   expect(inArea).not.toContain('card-c6b576')
@@ -1505,4 +1505,48 @@ test('a background run is matched to its own launch, not an older one opening wi
   expect(rows[at + 1]).toBe('3m 30s')
   expect(rows[rows.indexOf('发车 Codex（Fast Mode）') - 1]).toBe('▶')
   expect(rows.join(' ')).not.toMatch(/计划外|4h/)
+})
+
+test('work of the plan running on after its last step: 后台已跑 until asked, then the time left from the answer', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  on('store.set', () => ({ value: undefined }))
+  const asked: string[] = []
+  // the fork's answer is held back once, to see the row before it
+  let answer = false
+  on('model.fork', (_$, e) => { asked.push(e.prompt); return answer ? { value: { isAnswered: true, text: '12' } } : { value: { isAnswered: false, reason: 'busy' } } })
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const detail = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const alt = (await ui.findAll({ type: 'Svg' })).map((i) => String(i.props.alt)).join(' ')
+    await ui.unmount()
+    return (alt.match(/(剩约|后台已跑) (\S+?)(?:[ ,，]|$)/) || []).slice(1, 3).join(' ')
+  }
+  const sec = (n: number) => clock.advance(n * 1000)
+  // neo-fitness 2026-10-17: the PM gate goes to the background in step 1 and runs on after the last step
+  const gate = { id: 'gate', type: 'shell', status: 'running', description: '后台跑 3b 的 PM 门禁', command: 'run gate' }
+  await sec(60)
+  await $.turn.start({ text: '', turnId: 't1' })
+  await tasks('plan', { goal: 'DeepSeek 新模型对比百炼', tasks: [{ title: '查文档', minutes: 20 }, { title: '出对比和建议', minutes: 10 }] })
+  await $.tool.call({ tool: 'Bash', command: gate.command, description: gate.description, run_in_background: true } as never)
+  await sec(600); await tasks('done', { id: 1 })
+  await sec(300); await tasks('done', { id: 2 })
+  // the asks go out on the 15-second check, only while Claude waits
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [gate] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  await sec(20)
+  expect(asked.length).toBeGreaterThanOrEqual(1)
+  expect(asked.at(-1)).toContain('Every step of your task plan is done')
+  expect(asked.at(-1)).toContain('后台跑 3b 的 PM 门禁')
+  // no word yet: how long it has run, never a bare 后台在跑
+  expect(await detail()).toBe('后台已跑 15m')
+  // asked again two minutes on, answered: 12 more minutes from then
+  answer = true
+  await sec(130)
+  await sec(60)
+  expect(await detail()).toBe('剩约 11m')
 })

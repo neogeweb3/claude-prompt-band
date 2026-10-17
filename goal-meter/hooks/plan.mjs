@@ -283,7 +283,11 @@ function expectation(goal) {
 // minute while work is left.
 export function eta(goal, now) {
   const p = progress(goal)
-  if (goal.status !== 'running' || p.doneW >= p.total) return null
+  if (goal.status !== 'running') return null
+  // every step marked while work of the plan's own still runs: that work is what is left, at what
+  // Claude said of it when asked (bgAskDue), late the same way as a step; not yet asked, none
+  const own = bgLeft(goal)
+  if (p.doneW >= p.total && !own.length) return null
   const want = expectation(goal)
   let ms = 0
   for (const t of live(goal)) {
@@ -293,8 +297,47 @@ export function eta(goal, now) {
     const ran = t.status === 'active' ? Math.max(0, now - t.startedAt) : 0
     ms += ran <= w ? w - ran : ran - w
   }
+  for (const b of own) {
+    const w = bgWant(b)
+    if (!w) return null
+    const ran = Math.max(0, now - b.startedAt)
+    ms += ran <= w ? w - ran : ran - w
+  }
   ms = Math.max(60000, Math.round(ms))
   return { ms, at: now + ms }
+}
+
+// The plan's own background work still running (every step done or none running), and how long
+// one is expected to take in all from Claude's answer; 0 until it was asked. neo-fitness
+// 2026-10-17: its PM gate ran on after the last step, and the other chats' card could only say
+// 后台在跑, no time
+export const bgLeft = (goal) => ownWork(goal).filter((b) => b.status === 'running' && b.startedAt)
+const bgWant = (b) => (b.estAt ? b.estAt - b.startedAt + b.span : 0)
+
+// When to ask how much longer such work has: once it runs with no word on it, again once past
+// that word; at most ASK_MAX times, ASK_GAP apart. Returns { bg, late } or null.
+export function bgAskDue(goal, now) {
+  if (goal.status !== 'running') return null
+  for (const b of bgLeft(goal)) {
+    if ((b.asks || 0) >= ASK_MAX || (b.lastAskAt && now - b.lastAskAt < ASK_GAP)) continue
+    if (!b.estAt) return { bg: b, late: false }
+    if (!b.overdueSaid && now - b.startedAt > bgWant(b)) return { bg: b, late: true }
+  }
+  return null
+}
+
+// Claude's answer for such work, "minutes" more from now
+export function bgReestimate(b, more, now) {
+  Object.assign(b, { estAt: now, span: more * 60000, overdueSaid: false })
+}
+
+export function bgForkPrompt(b, now) {
+  const ran = Math.round((now - b.startedAt) / 60000)
+  return (
+    `(A question from the progress-row mod, not from the user; answer it and nothing else.) ` +
+    `Every step of your task plan is done, but work you started in the background is still running: "${b.title}", for ${ran} minutes. ` +
+    `From what you know of that work, how many more minutes from now until it finishes? Reply with one number of minutes only.`
+  )
 }
 
 // When to ask Claude how much longer the running step has, read after its next tool call (the

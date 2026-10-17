@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, endInLog, launchMatch, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, endInLog, launchMatch, eta, bgLeft, bgAskDue, bgReestimate, bgForkPrompt, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -719,7 +719,7 @@ async function idleAsk($) {
   if (!settings.ask || forking || !G || G.status !== 'running' || G.active || working || background === 0) return
   const at = await $.clock.now()
   const ask = askDue(G, at)
-  if (!ask) return
+  if (!ask) return bgAsk($, at)
   const t = ask.task
   markAsked(t, ask.late, at)
   await save($)
@@ -735,6 +735,36 @@ async function idleAsk($) {
     entry.moreMin = more
     if (more && G && t.status === 'active') {
       reestimate(t, more, await $.clock.now())
+      await save($)
+      $.ui.invalidate('ui.render')
+    }
+  } catch (err) {
+    entry.error = clip(String(err && err.message ? err.message : err), 200)
+  } finally {
+    forking = false
+    await logAsk($, entry)
+  }
+}
+
+// The same, for work of the plan's own still running after its last step
+async function bgAsk($, at) {
+  const ask = bgAskDue(G, at)
+  if (!ask) return
+  const b = ask.bg
+  Object.assign(b, { asks: (b.asks || 0) + 1, lastAskAt: at }, ask.late ? { overdueSaid: true } : {})
+  await save($)
+  forking = true
+  const entry = { at: new Date(at).toISOString(), session: G.sessionId, step: '后台 · ' + b.title, ranMin: Math.round((at - b.startedAt) / 60000), givenMin: b.estAt ? Math.round(((b.estAt - b.startedAt + b.span) / 60000) * 10) / 10 : 0, late: ask.late }
+  try {
+    const r = await $.model.fork({ prompt: bgForkPrompt(b, at) })
+    entry.answered = r.isAnswered
+    if (r.isAnswered) entry.reply = clip(String(r.text || ''), 200)
+    else entry.reason = r.reason
+    if (r.usage) entry.usage = r.usage
+    const more = r.isAnswered ? minutesIn(r.text) : 0
+    entry.moreMin = more
+    if (more && G && b.status === 'running') {
+      bgReestimate(b, more, await $.clock.now())
       await save($)
       $.ui.invalidate('ui.render')
     }
@@ -878,7 +908,7 @@ function drawRow(el, e) {
   const t = busy(G) ? eta(G, now) : null
   const work = working && !(G && G.status === 'running') ? { calls: turnCalls } : null
   const celebrate = !!G && G.status === 'met' && now - (G.endedAt || 0) < CELEBRATE_MS
-  const r = rowOf(G ? { ...G, title: mask(G.title), celebrate, background: G.status === 'running' && !working ? background : 0 } : null, p, t ? t.ms : 0, work, lastTurn, now)
+  const r = rowOf(G ? { ...G, title: mask(G.title), celebrate, background: G.status === 'running' && !working ? background : 0, bgRan: G.status === 'running' ? bgLeft(G).reduce((a, b) => Math.max(a, now - b.startedAt), 0) : 0 } : null, p, t ? t.ms : 0, work, lastTurn, now)
   if (!r) return null // a chat that has done nothing yet: no row at all
   const desk = e.surface === 'desktop' || e.surface === 'mobile'
   const width = Math.max(40, (e.props && e.props.bodyColumns) || 100)
@@ -993,7 +1023,11 @@ function otherItem(g) {
   if (done) right = '完成 ✓'
   else if (g.status !== 'running') right = '已停止'
   else if (!(g.planned || g.planAt)) right = '列步骤中'
-  else right = t ? `剩约 ${minutes(t.ms)}` : ownWork(g).some((b) => b.status === 'running') ? '后台在跑' : ''
+  else {
+    // not asked yet: how long the work has run, never a bare 后台在跑 (neo-fitness 2026-10-17)
+    const ran = bgLeft(g).reduce((a, b) => Math.max(a, now - b.startedAt), 0)
+    right = t ? `剩约 ${minutes(t.ms)}` : ran ? `后台已跑 ${minutes(ran)}` : ownWork(g).some((b) => b.status === 'running') ? '后台在跑' : ''
+  }
   return { name: mask(project), title: mask(g.title || ''), fraction: done ? 1 : p.fraction, figure: p.n ? `${p.doneN}/${p.n}` : '', right, done }
 }
 
