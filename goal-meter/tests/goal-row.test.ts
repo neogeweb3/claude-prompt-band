@@ -1461,3 +1461,48 @@ test('a step put back after it was asked how much longer forgets the answer, so 
   expect(t).not.toMatch(/\d{3,}h/)
   expect(t).toMatch(/^\d+m$/)
 })
+
+test('a background run is matched to its own launch, not an older one opening with the same command', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const sec = (n: number) => clock.advance(n * 1000)
+  const card = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const src = String((await rowImgs(ui)).at(-1)!.props!.source)
+    await ui.unmount()
+    return [...src.matchAll(/>([^<>]+)</g)].map((m) => m[1]!.trim()).filter((x) => x && !x.includes('{'))
+  }
+  // neo-fitness 2026-10-16: the same script and settings open both commands for well over 200 characters
+  const open = 'CODEX_SERVICE_TIER=priority CODEX_WRITABLE_ROOTS="$HOME/.cache/clang:$HOME/Library/Caches/org.swift.swiftpm" ~/.claude/skills/codex-builds/scripts/with-deadline.sh 14400 ~/.claude/skills/codex-builds/scripts/runner.sh --worktree /Users/nge/neo-fitness/.claude/worktrees/'
+  const old = { command: open + 'builds-attachments --stage 3', description: 'Dispatch Codex stage 3 for attachments batch' }
+  const mine = { command: open + 'builds-bailian-delete --stage 3', description: '后台发车 Codex 做 ④（Fast Mode）' }
+  await clock.advance(Date.parse('2026-10-17T01:44:00Z'))
+  // 18:44: the earlier run, launched and done within its turn: no Stop ever lists it
+  await $.turn.start({ text: '', turnId: 't0' })
+  await $.tool.call({ tool: 'Bash', ...old, run_in_background: true } as never)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't0' })
+  // 22:50: a new plan; at 22:56 step 4 sends off its own run
+  await sec(4 * 3600 + 6 * 60)
+  await $.turn.start({ text: '', turnId: 't1' })
+  await tasks('plan', { goal: '迁阿里云 ④', tasks: [{ title: '摸清现状', minutes: 5 }, { title: '发车 Codex（Fast Mode）', minutes: 40 }, { title: 'PM 门禁 + 合进 napier', minutes: 20 }] })
+  await sec(330); await tasks('done', { id: 1 })
+  await sec(30); await $.tool.call({ tool: 'Bash', ...mine, run_in_background: true } as never)
+  await sec(10)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'bgikd5eif', type: 'shell', status: 'running', ...mine }] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  await sec(200)
+  const rows = await card()
+  // under the step that sent it off, ↳ 3m 30s, the step running; never 计划外, never 4h
+  const at = rows.findIndex((r) => r.startsWith('后台发车 Codex'))
+  expect(at).toBeGreaterThan(rows.indexOf('发车 Codex（Fast Mode）'))
+  expect(rows[at - 1]).toBe('↳')
+  expect(rows[at + 1]).toBe('3m 30s')
+  expect(rows[rows.indexOf('发车 Codex（Fast Mode）') - 1]).toBe('▶')
+  expect(rows.join(' ')).not.toMatch(/计划外|4h/)
+})

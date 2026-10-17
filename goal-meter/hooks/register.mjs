@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, endInLog, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, endInLog, launchMatch, eta, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -482,13 +482,13 @@ export function register(on) {
     const list = e && Array.isArray(e.background_tasks) ? e.background_tasks : []
     const at = await $.clock.now()
     // when each task started and under which step: the background tool call that launched it (the
-    // same command, else the same description); for one launched before this process loaded (an
-    // update reloads the mod), the log's tool result that names its id; else unknown
+    // latest with the same description and command, launchMatch); for one launched before this
+    // process loaded (an update reloads the mod), the log's tool result that names its id; else
+    // unknown
     for (const b of list) {
       const id = String(b.id)
       if (bgSeen.has(id)) continue
-      const cmd = String(b.command || '').slice(0, 200)
-      const i = bgLaunches.findIndex((l) => (cmd && l.command.slice(0, 200) === cmd) || (!cmd && l.description && l.description === String(b.description || '')))
+      const i = launchMatch(bgLaunches, b)
       if (i >= 0) {
         bgSeen.set(id, { at: bgLaunches[i].at, step: bgLaunches[i].step })
         bgLaunches.splice(i, 1)

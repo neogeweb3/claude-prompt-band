@@ -206,6 +206,25 @@ export function launchInLog(text, id) {
   }
 }
 
+// Which background tool call of this session launched a task the Stop lists: the latest one with
+// the same description (when both have one) and the same command (the Stop's is cut at 1000
+// characters, "... [+N chars]" marking the cut, so a cut one need only open the same); -1 if none,
+// and the log is asked instead. Only the first 200 characters were compared before, oldest first: a
+// Codex run sent off at 22:56 was taken for one sent off at 18:44 with the same opening (the same
+// script and settings), so it read 4h 15m, 计划外 (neo-fitness, 2026-10-16).
+export function launchMatch(launches, b) {
+  const desc = String(b.description || '')
+  const raw = String(b.command || '')
+  const cut = raw.match(/^([\s\S]*?)\.\.\. \[\+\d+ chars\]$/)
+  const cmd = cut ? cut[1] : raw
+  for (let i = launches.length - 1; i >= 0; i--) {
+    const l = launches[i]
+    if (desc && l.description && l.description !== desc) continue
+    if (cmd ? (cut ? l.command.startsWith(cmd) : l.command === cmd) : desc && l.description === desc) return i
+  }
+  return -1
+}
+
 // When a background task really ended, from the chat's log: the notification it woke the session
 // with ("<task-id>ID</task-id>"), queued the moment it ended. The next Stop may come much later: a
 // round of review that ended at 09:17 was taken to end at 20:24, its turn having died on an expired
