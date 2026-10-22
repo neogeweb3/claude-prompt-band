@@ -133,11 +133,13 @@ export function foldBackground(goal, list, seen, now, ended = new Map()) {
     bg.push({ id, title: String(b.description || b.command || b.type || '后台任务').replace(/\s+/g, ' ').trim().slice(0, 80), kind: String(b.type || ''), status: 'running', startedAt: from.unknown ? 0 : from.at, step: from.step || 0, ...(outside ? { outside: true } : {}) })
   }
   placeBackground(goal, seen)
-  const active = anyActive(goal)
   for (const x of bg) {
-    if (x.status !== 'running') continue
-    // it ended: a step of its own only if it ran on with no step of the plan running
-    if (!running.has(x.id)) Object.assign(x, { status: 'done', doneAt: Math.max(x.startedAt || 0, Math.min(now, ended.get(x.id) || now)), own: !x.outside && !active })
+    if (x.status !== 'running' || running.has(x.id)) continue
+    // it ended: a step of its own only if no step of the plan was running when it ended (not when
+    // the Stop came: one that ended in step 1, read at a Stop after both steps were marked, made a
+    // two-step plan 3/3; Codex review of 1.8.29, 2026-10-22)
+    const doneAt = Math.max(x.startedAt || 0, Math.min(now, ended.get(x.id) || now))
+    Object.assign(x, { status: 'done', doneAt, own: !x.outside && !stepAt(goal, doneAt - 1) })
   }
   return bg.filter((x) => x.status === 'running' && !x.outside).length
 }

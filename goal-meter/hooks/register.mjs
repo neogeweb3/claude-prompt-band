@@ -47,7 +47,6 @@ let backgroundWork = [] // what they are, in a few words each
 const bgSeen = new Map() // each background task's id → { at: when it started, step: the step running then }
 let bgLaunches = [] // background tool calls of this session not yet matched to a task: { command, description, at, step }
 let forking = false // a fork of the conversation is asking how much longer
-let askClock = false // the clock that checks for an ask while Claude waits; started the first time it does
 let turnCalls = 0 // its tool calls so far, the mod's own left out
 let turnNudged = false
 let ops = [] // this turn's tool calls, newest last: the hover card's details while there is no plan
@@ -192,8 +191,10 @@ async function registerCommand($) {
 }
 
 // Where a new plan's own background work begins: the start of the turn it is made in, or the end of
-// an earlier plan within that turn (work launched before then was that plan's)
-const planSince = () => Math.max(working ? turnAt : now, (G && G.endedAt) || 0)
+// an earlier plan within that turn (work launched before then was that plan's). A plan whose steps
+// are all marked is closed only when the turn ends, so its last step's end counts as its end: a plan
+// made after it in the same turn took its server for its own (Codex review of 1.8.30, 2026-10-22)
+const planSince = () => Math.max(working ? turnAt : now, (G && G.endedAt) || 0, ...(G ? G.tasks.map((t) => t.doneAt || 0) : []))
 
 async function startGoal($, condition) {
   G = newGoal({ sessionId, condition, now, cwd, since: planSince() })
@@ -395,6 +396,9 @@ export function register(on) {
       // a finished row says how long ago it finished, so it redraws too
       if (paneOpen || G || lastTurn || others.length) $.ui.invalidate('ui.render')
     })
+    // a plan restored after a reload waits on background work with no turn ending to start the asks
+    // (Codex review of 1.8.33, 2026-10-22)
+    askEvery($)
     $.clock.every(10000, () => readRecording($).catch(() => {}))
     // a step's clock counts by the second, as the background-task panel's does
     $.clock.every(1000, async () => {
@@ -600,12 +604,8 @@ export function register(on) {
       working = false
       if (turnCalls > 0) lastTurn = { calls: turnCalls, ms: now - (turnAt || now), at: now }
       $.ui.invalidate('ui.render')
-      // the turn left background work running (classic.Stop, just before this, counted it)
-      if (background && !askClock) {
-        askClock = true
-        $.clock.every(15000, () => idleAsk($).catch(() => {}))
-      }
     }
+    if (!e.agentId) askEvery($)
     if (e.agentId) {
       runningAgents.delete(e.agentId)
       if (G && G.status === 'running') $.ui.invalidate('ui.render')
@@ -614,9 +614,11 @@ export function register(on) {
     // a turn that died on an API error (an expired login, 2026-10-09) raises no classic.Stop, so
     // what the last Stop left running would keep every clock going: what the log shows has ended
     // since is done, at its own time
-    if (!stopped && G && G.status === 'running' && background) {
-      const ended = await endedInLog($, new Set(G.bg.filter((x) => x.status === 'running').map((x) => x.id)))
-      if (ended.size) background = foldBackground(G, G.bg.filter((x) => x.status === 'running' && !ended.has(x.id)), bgSeen, now, ended)
+    // (any work still on the plan's list, outside work too; a plan made this turn may have none)
+    const live = G && Array.isArray(G.bg) ? G.bg.filter((x) => x.status === 'running') : []
+    if (!stopped && G && G.status === 'running' && live.length) {
+      const ended = await endedInLog($, new Set(live.map((x) => x.id)))
+      if (ended.size) background = foldBackground(G, live.filter((x) => !ended.has(x.id)), bgSeen, now, ended)
     }
     if (G && G.status === 'running') {
       G.active = false
@@ -715,6 +717,15 @@ function paused(g) {
 // served from the prompt cache, shown to no one) is asked how much longer, and the answer is taken
 // as Claude's own. Every ask goes into ~/.claude/mods-data/goal-meter/asks.jsonl with what it cost.
 // `/goals ask off` turns it off.
+// While Claude waits on background work, ask every 15 seconds whether an ask is due (idleAsk checks
+// the rest); one clock, started by whichever comes first, the session's start or a turn's end
+let askClock = false
+function askEvery($) {
+  if (askClock) return
+  askClock = true
+  $.clock.every(15000, () => idleAsk($).catch(() => {}))
+}
+
 async function idleAsk($) {
   if (!settings.ask || forking || !G || G.status !== 'running' || G.active || working || background === 0) return
   const at = await $.clock.now()

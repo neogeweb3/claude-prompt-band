@@ -1550,3 +1550,142 @@ test('work of the plan running on after its last step: 后台已跑 until asked,
   await sec(60)
   expect(await detail()).toBe('剩约 11m')
 })
+
+// Codex review of 1.8.28-1.8.33 (2026-10-22): its four blockers, each as the input it gave
+const cardRowsOf = async ($: { ui: { mount: (x: object) => Promise<{ unmount: () => Promise<void> } & { find: (q: object) => Promise<unknown> }> } }) => {
+  const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+  const imgs = await rowImgs(ui)
+  const alt = imgs.map((i) => String(i.props!.alt)).join(' ')
+  const src = String(imgs.at(-1)!.props!.source)
+  await ui.unmount()
+  return { alt, rows: [...src.matchAll(/>([^<>]+)</g)].map((m) => m[1]!.trim()).filter((x) => x && !x.includes('{')) }
+}
+
+test('a turn dying with no Stop settles ended work even when the plan has only outside work', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  let log = ''
+  on('process.run', grepLog(() => log))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  await clock.advance(Date.parse('2026-10-22T10:00:00Z'))
+  const srv = { id: 'srv', type: 'shell', status: 'running', description: '上一轮起的服务器', command: 'run srv' }
+  // a turn with no plan leaves a server running
+  await $.turn.start({ text: '', turnId: 't0' })
+  await $.tool.call({ tool: 'Bash', command: srv.command, description: srv.description, run_in_background: true } as never)
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/chat.jsonl', background_tasks: [srv] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't0' })
+  // the next turn makes a plan and stops normally: the server is outside it
+  await clock.advance(60000)
+  await $.turn.start({ text: '', turnId: 't1' })
+  await tasks('plan', { goal: '下一件事', tasks: [{ title: '查', minutes: 10 }, { title: '改', minutes: 10 }] })
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/chat.jsonl', background_tasks: [srv] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  // the server ends; the turn it wakes dies on an API error, no Stop
+  await clock.advance(120000)
+  log += JSON.stringify({ type: 'queue-operation', timestamp: new Date(Date.parse('2026-10-22T10:03:00Z')).toISOString(), content: '<task-id>srv</task-id>' }) + '\n'
+  await $.turn.start({ text: '', turnId: 't2' })
+  await $.turn.complete({ reason: 'error', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
+  const { rows } = await cardRowsOf($ as never)
+  expect(rows.some((r) => r.startsWith('计划外'))).toBe(false)
+})
+
+test('a plan made after another in the same turn does not take the earlier plan\'s server', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const sec = (n: number) => clock.advance(n * 1000)
+  const job = (id: string, description: string) => ({ id, type: 'shell', status: 'running', description, command: 'run ' + id })
+  const launch = (j: { id: string, description: string }) => $.tool.call({ tool: 'Bash', command: 'run ' + j.id, description: j.description, run_in_background: true } as never)
+  await clock.advance(Date.parse('2026-10-22T10:00:00Z'))
+  const srv = job('srv', 'A 起的服务器')
+  const codex = job('codex', 'B 派的 Codex')
+  await $.turn.start({ text: '', turnId: 't1' })
+  await tasks('plan', { goal: 'A', tasks: [{ title: '起服务器', minutes: 5 }] })
+  await sec(30); await launch(srv)
+  await sec(30); await tasks('done', { id: 1 })
+  await sec(30); await launch(codex)
+  await sec(30); await tasks('plan', { goal: 'B', tasks: [{ title: '等 Codex', minutes: 30 }, { title: '验收', minutes: 10 }] })
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [srv, codex] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  const { rows } = await cardRowsOf($ as never)
+  // A's server, launched before A's last step ended, is outside B; B's Codex is under B's step
+  expect(rows.some((r) => r.startsWith('计划外 · A 起的服务器'))).toBe(true)
+  expect(rows[rows.findIndex((r) => r.startsWith('B 派的 Codex')) - 1]).toBe('↳')
+})
+
+test('work that ended inside a step is that step\'s, even when the Stop that reads it comes after every step', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  let log = ''
+  on('process.run', grepLog(() => log))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const sec = (n: number) => clock.advance(n * 1000)
+  await clock.advance(Date.parse('2026-10-22T10:00:00Z'))
+  const run = { id: 'run', type: 'shell', status: 'running', description: '跑测试', command: 'run tests' }
+  await $.turn.start({ text: '', turnId: 't1' })
+  await tasks('plan', { goal: '两步', tasks: [{ title: '测', minutes: 10 }, { title: '报', minutes: 5 }] })
+  await $.tool.call({ tool: 'Bash', command: run.command, description: run.description, run_in_background: true } as never)
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/chat.jsonl', background_tasks: [run] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  // it ends 3 minutes in, inside step 1; the turn it wakes marks both steps, then stops
+  await sec(180)
+  log += JSON.stringify({ type: 'queue-operation', timestamp: new Date(Date.parse('2026-10-22T10:03:00Z')).toISOString(), content: '<task-id>run</task-id>' }) + '\n'
+  await $.turn.start({ text: '', turnId: 't2' })
+  await sec(60); await tasks('done', { id: 1 })
+  await sec(60); await tasks('done', { id: 2 })
+  await $.classic.Stop({ stop_hook_active: false, transcript_path: '/chat.jsonl', background_tasks: [] } as never)
+  const { alt } = await cardRowsOf($ as never)
+  expect(alt).toContain('2/2')
+  expect(alt).not.toContain('3/3')
+})
+
+test('a plan restored after a reload, every step done and its own work running, is asked how much longer while idle', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  const asked: string[] = []
+  on('model.fork', (_$, e) => { asked.push(e.prompt); return { value: { isAnswered: true, text: '12' } } })
+  const clock = mock.clock(on)
+  await clock.advance(Date.parse('2026-10-22T10:00:00Z'))
+  const t0 = Date.parse('2026-10-22T09:30:00Z')
+  const g = newGoal({ sessionId: 's1', condition: 'DeepSeek 新模型对比百炼', now: t0, cwd: '/Users/me/neo-fitness' })
+  applyAction(g, { action: 'plan', tasks: [{ title: '查文档', minutes: 20 }, { title: '出对比', minutes: 10 }] }, { now: t0 })
+  applyAction(g, { action: 'done', id: 1 }, { now: t0 + 600000 })
+  applyAction(g, { action: 'done', id: 2 }, { now: t0 + 900000 })
+  const file = { ...g, active: false, lastTurnEnd: t0 + 900000, updatedAt: t0 + 900000, bg: [
+    { id: 'gate', title: '后台跑 3b 的 PM 门禁', status: 'running', startedAt: t0 + 60000, step: 1, own: true },
+  ] }
+  on('env.get', (_$, e) => ({ value: (e as { name: string }).name === 'HOME' ? '/home/me' : undefined }))
+  on('session.start', (_$, e) => ({ ...(e as object) }))
+  on('session.id', () => ({ value: 's1' }))
+  on('session.cwd', () => ({ value: '/Users/me/neo-fitness' }))
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('tool.register', () => ({ value: { tool: 'mcp__goal-meter__tasks' } }))
+  on('command.register', () => ({ value: undefined }))
+  on('fs.exists', () => ({ value: true }))
+  on('fs.list', () => ({ value: [] }))
+  on('fs.write', () => ({ value: undefined }))
+  on('fs.read', (_$, e) => {
+    const path = String((e as { path: string }).path)
+    if (path.endsWith('s1.json')) return { value: JSON.stringify(file) }
+    throw new Error('no such file ' + path)
+  })
+  on('process.run', grepLog(() => ''))
+  await $.session.start({ cwd: '/Users/me/neo-fitness', source: 'resume' } as never)
+  // no turn ends after the reload: the asks still go out
+  await clock.advance(20000)
+  expect(asked.length).toBeGreaterThanOrEqual(1)
+  expect(asked[0]).toContain('后台跑 3b 的 PM 门禁')
+})
