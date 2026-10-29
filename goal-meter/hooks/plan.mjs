@@ -257,8 +257,8 @@ export function endInLog(text, id, after) {
 const CORRECT_AFTER = 5 * 60000
 function expectation(goal) {
   const tasks = live(goal)
-  const timed = tasks.filter((t) => t.status === 'done' && !t.untimed && t.doneAt > t.startedAt)
-  const took = (t) => t.doneAt - t.startedAt
+  const timed = tasks.filter((t) => t.status === 'done' && !t.untimed && t.doneAt > clockOf(t))
+  const took = (t) => t.doneAt - clockOf(t)
   const est = timed.filter((t) => t.minutes)
   const said = est.reduce((a, t) => a + t.minutes * 60000, 0)
   // held to between a quarter and twice. Claude's minutes run long: in the ledger of 2026-10-10
@@ -274,7 +274,7 @@ function expectation(goal) {
   // an answer to "how much longer" is already today's word: taken as given, never scaled (scaled,
   // a 4-minute answer read as 20 seconds, so the step was late again at once and asked again, every
   // 15 seconds: 6 forks in a row, 2026-10-08)
-  return (t) => (t.estAt && t.startedAt ? t.estAt - t.startedAt + t.span : t.minutes ? t.minutes * 60000 * scale : pace * weight(t))
+  return (t) => (t.estAt && t.startedAt ? t.estAt - clockOf(t) + t.span : t.minutes ? t.minutes * 60000 * scale : pace * weight(t))
 }
 
 // The running one counts down from what it is expected to take. Past that, it is late, and a late
@@ -286,6 +286,8 @@ function expectation(goal) {
 export function eta(goal, now) {
   const p = progress(goal)
   if (goal.status !== 'running') return null
+  // stood still: the time left as it was when the work stopped (another chat's card reads it)
+  const at = Math.min(now, pausedSince(goal) || now)
   // every step marked while work of the plan's own still runs: that work is what is left, at what
   // Claude said of it when asked (bgAskDue), late the same way as a step; not yet asked, none
   const own = bgLeft(goal)
@@ -296,17 +298,46 @@ export function eta(goal, now) {
     if (t.status === 'done') continue
     const w = want(t)
     if (!w) return null
-    const ran = t.status === 'active' ? Math.max(0, now - t.startedAt) : 0
+    const ran = t.status === 'active' ? Math.max(0, at - clockOf(t)) : 0
     ms += ran <= w ? w - ran : ran - w
   }
   for (const b of own) {
     const w = bgWant(b)
     if (!w) return null
-    const ran = Math.max(0, now - b.startedAt)
+    const ran = Math.max(0, at - b.startedAt)
     ms += ran <= w ? w - ran : ran - w
   }
   ms = Math.max(60000, Math.round(ms))
   return { ms, at: now + ms }
+}
+
+// Where a step's clock counts from: its start, moved on past any time the work stood still (resume)
+export const clockOf = (t) => t.clockAt || t.startedAt
+
+// When the plan's work stopped: its last turn ended and nothing of its own runs in the background
+// (the step reads ⏸, waiting on the person); 0 while anything is at work on it
+export function pausedSince(goal) {
+  if (goal.status !== 'running' || goal.active || !goal.lastTurnEnd) return 0
+  const own = Array.isArray(goal.bg) ? goal.bg.filter((b) => !b.outside) : []
+  if (own.some((b) => b.status === 'running')) return 0
+  return Math.max(goal.lastTurnEnd, ...own.map((b) => b.doneAt || 0))
+}
+
+// Work on it again: the time it stood still is no step's, so each running step's clock, and Claude's
+// last word on it, moves on by that much. Its start stays as it was: which step a background run
+// belongs to is read from when the steps really started. neo-fitness 2026-10-29: a step said at 30 minutes sat
+// running through four hours of waiting on Neo's replies, read 4 hours late, and a late step is
+// taken to need as long again: 剩约 5 小时 14 分 for 45 minutes of work
+export function resume(goal, now) {
+  const from = pausedSince(goal)
+  if (!from) return
+  for (const t of goal.tasks) {
+    if (t.status !== 'active') continue
+    const gap = now - Math.max(from, clockOf(t))
+    if (gap <= 0) continue
+    t.clockAt = clockOf(t) + gap
+    if (t.estAt) t.estAt += gap
+  }
 }
 
 // The plan's own background work still running (every step done or none running), and how long
@@ -362,9 +393,9 @@ export function askDue(goal, now) {
     if (t.status !== 'active') continue
     if ((t.asks || 0) >= ASK_MAX || (t.lastAskAt && now - t.lastAskAt < ASK_GAP)) continue
     const w = want(t)
-    if (w > 0 && !t.overdueSaid && now - t.startedAt > w) return { task: t, late: true }
+    if (w > 0 && !t.overdueSaid && now - clockOf(t) > w) return { task: t, late: true }
     const span = t.span || (t.minutes || 0) * 60000
-    if (t.minutes >= EARLY_FROM && !t.steady && !t.asked && (t.checks || 0) < EARLY_MAX && now - (t.estAt || t.startedAt) >= span / 4) return { task: t, late: false }
+    if (t.minutes >= EARLY_FROM && !t.steady && !t.asked && (t.checks || 0) < EARLY_MAX && now - (t.estAt || clockOf(t)) >= span / 4) return { task: t, late: false }
   }
   return null
 }
@@ -379,15 +410,15 @@ export function markAsked(t, late, now) {
 // Claude's answer, "minutes" more from now, for a step under way: its estimate counts from now;
 // one that moved the finish little says the step is on course, so it is asked early no more
 export function reestimate(t, more, now) {
-  const before = t.minutes ? t.startedAt + t.minutes * 60000 : 0
+  const before = t.minutes ? clockOf(t) + t.minutes * 60000 : 0
   const after = now + more * 60000
   Object.assign(t, {
-    minutes: Math.round(((now - t.startedAt) / 60000 + more) * 10) / 10,
+    minutes: Math.round(((now - clockOf(t)) / 60000 + more) * 10) / 10,
     estAt: now,
     span: more * 60000,
     asked: false,
     overdueSaid: false,
-    steady: before > 0 && Math.abs(after - before) <= STEADY * (before - t.startedAt),
+    steady: before > 0 && Math.abs(after - before) <= STEADY * (before - clockOf(t)),
   })
 }
 
@@ -396,7 +427,7 @@ export function reestimate(t, more, now) {
 // start of 0: a step put back after "19 more minutes" read 剩约 497823h (neo-fitness, 2026-10-16)
 function unstart(t) {
   Object.assign(t, { status: 'pending', startedAt: 0, auto: false, minutes: t.said || t.minutes })
-  for (const k of ['estAt', 'span', 'asked', 'checks', 'overdueSaid', 'asks', 'lastAskAt', 'steady']) delete t[k]
+  for (const k of ['clockAt', 'estAt', 'span', 'asked', 'checks', 'overdueSaid', 'asks', 'lastAskAt', 'steady']) delete t[k]
 }
 
 // Minutes Claude expects a step to take: a number above 0, up to a day; 0 when not given
@@ -498,7 +529,7 @@ export function applyAction(goal, input, { now, by = '' } = {}) {
       const auto = goal.tasks.find((t) => t.auto && t.status === 'active' && !ids.includes(t.id))
       const pending = tasks.filter((t) => t.status === 'pending')
       if (auto && pending.length === 1 && tasks.length === 1) {
-        Object.assign(pending[0], { status: 'active', startedAt: auto.startedAt })
+        Object.assign(pending[0], { status: 'active', startedAt: auto.startedAt, ...(auto.clockAt ? { clockAt: auto.clockAt } : {}) })
         unstart(auto)
       }
       unstarted = tasks.filter((t) => t.status === 'pending').length
@@ -642,7 +673,7 @@ export function autoNudge(tool) {
 
 // Asked a quarter of the way into a long step's estimate, before it can be late
 export function earlyNudge(tool, t, now) {
-  const ran = Math.round((now - t.startedAt) / 60000)
+  const ran = Math.round((now - clockOf(t)) / 60000)
   return (
     `Step #${t.id} "${t.title}" of the progress row has run ${ran} of the ${t.minutes} minutes it was given. ` +
     `Call ${tool} with action "start", id ${t.id} and "minutes", how many more from now, even if your estimate still holds; ` +
@@ -664,7 +695,7 @@ export function lateNudge(tool, t) {
 // the person) while Claude sits idle and background work carries the running step: the time that
 // has passed is not in the transcript, so the question says it
 export function forkPrompt(t, now, background) {
-  const ran = Math.round((now - t.startedAt) / 60000)
+  const ran = Math.round((now - clockOf(t)) / 60000)
   const given = t.minutes ? `; you gave it ${t.minutes}` : ''
   const bg = background.length ? ` Work you started in the background is still running: ${background.join('; ')}.` : ''
   return (
@@ -702,7 +733,7 @@ export function ledgerLine(t, { now, session, model }) {
     model: model || '',
     said: t.said || 0,
     final: t.minutes || 0,
-    tookMin: t.untimed ? null : Math.round(((t.doneAt || now) - t.startedAt) / 6000) / 10,
+    tookMin: t.untimed ? null : Math.round(((t.doneAt || now) - clockOf(t)) / 6000) / 10,
     untimed: !!t.untimed,
     reestimated: !!t.estAt,
     asks: t.asks || 0,

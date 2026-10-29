@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, endInLog, launchMatch, eta, bgLeft, bgAskDue, bgReestimate, bgForkPrompt, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, endInLog, launchMatch, eta, bgLeft, bgAskDue, bgReestimate, bgForkPrompt, pausedSince, resume, clockOf, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -472,8 +472,11 @@ export function register(on) {
       G.finishedBy = ''
     }
     if (G && G.status === 'running') {
+      if (!e.agentId) resume(G, now)
       G.active = true
       G.interrupted = false
+      // other chats read the file: at work again, not frozen at the pause
+      if (!e.agentId) await save($)
     }
     return next(e)
   })
@@ -621,6 +624,8 @@ export function register(on) {
       if (ended.size) background = foldBackground(G, live.filter((x) => !ended.has(x.id)), bgSeen, now, ended)
     }
     if (G && G.status === 'running') {
+      // the count follows this plan's list: one made this turn has none of the earlier plan's work
+      background = planRunning(G)
       G.active = false
       G.lastTurnEnd = now
       if (e.isAborted) G.interrupted = true
@@ -735,7 +740,7 @@ async function idleAsk($) {
   markAsked(t, ask.late, at)
   await save($)
   forking = true
-  const entry = { at: new Date(at).toISOString(), session: G.sessionId, step: t.title, ranMin: Math.round((at - t.startedAt) / 60000), givenMin: t.minutes || 0, late: ask.late }
+  const entry = { at: new Date(at).toISOString(), session: G.sessionId, step: t.title, ranMin: Math.round((at - clockOf(t)) / 60000), givenMin: t.minutes || 0, late: ask.late }
   try {
     const r = await $.model.fork({ prompt: forkPrompt(t, at, backgroundWork) })
     entry.answered = r.isAnswered
@@ -852,11 +857,11 @@ function footerLabel() {
 function taskTail(t) {
   // a finished step shows its time, to the second (42s, 3m 05s, 1h 02m); one never started, a dash
   // never started, so its time is not known: a dash, not a made-up 0s
-  if (t.status === 'done') return t.untimed ? '—' : duration(t.doneAt - t.startedAt)
+  if (t.status === 'done') return t.untimed ? '—' : duration(t.doneAt - clockOf(t))
   // the running step shows its clock alone: the ▶ already says it is under way
   // (stopped where the work stopped, when nothing runs any more)
-  const at = busy(G) ? now : (G && G.lastTurnEnd) || now
-  if (t.status === 'active') return (t.by ? t.by + ' · ' : '') + duration(Math.max(0, at - t.startedAt))
+  const at = busy(G) ? now : (G && (pausedSince(G) || G.lastTurnEnd)) || now
+  if (t.status === 'active') return (t.by ? t.by + ' · ' : '') + duration(Math.max(0, at - clockOf(t)))
   if (t.status === 'dropped') return '已放弃' + (t.note ? '：' + t.note : '')
   return ''
 }

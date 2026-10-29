@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { applyAction, autoPlan, endInLog, foldBackground, ledgerLine, newGoal, shown } from '../hooks/plan.mjs'
+import { applyAction, autoPlan, endInLog, eta, foldBackground, ledgerLine, newGoal, shown } from '../hooks/plan.mjs'
 import { CARD, FRAME, LINE, ROW_ROOM, SCALE, ago, cropSvg, rowOf, rowSpans, rowSvg, stepsSvg, textW } from '../hooks/row.mjs'
 
 const BAND = {
@@ -1688,4 +1688,153 @@ test('a plan restored after a reload, every step done and its own work running, 
   await clock.advance(20000)
   expect(asked.length).toBeGreaterThanOrEqual(1)
   expect(asked[0]).toContain('后台跑 3b 的 PM 门禁')
+})
+
+test('time the work stood still waiting on the person is no step\'s: back at work, the clock and time left go on from where they stopped', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  const view = async () => {
+    const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+    const imgs = await ui.findAll({ type: 'Svg' })
+    const card = String((await rowImgs(ui)).at(-1)!.props!.source)
+    await ui.unmount()
+    return { row: imgs.map((i) => String(i.props.alt)).join(' '), tails: [...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1]) }
+  }
+  const turn = async (id: string, work: number) => {
+    await $.turn.start({ text: '', turnId: id })
+    await clock.advance(work)
+    await $.classic.Stop({ stop_hook_active: false, background_tasks: [] } as never)
+    await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: id })
+  }
+  // neo-fitness 2026-10-29: 核结果 said at 30 minutes, worked on 20, then four hours of waiting on Neo
+  await clock.advance(Date.parse('2026-10-29T04:29:00Z'))
+  await $.turn.start({ text: '做', turnId: 't1' })
+  await tasks('plan', { goal: '收尾', tasks: [{ title: '核结果', minutes: 30 }, { title: '汇报', minutes: 10 }] })
+  await clock.advance(20 * 60000)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  await clock.advance(4 * 3600000)
+  expect((await view()).tails).toEqual(['20m 00s']) // stood still while waiting
+  // a few short turns answering him, hours apart: only their minutes count
+  await turn('t2', 60000)
+  await clock.advance(2 * 3600000)
+  await $.turn.start({ text: '你给我一个 ETA 啊', turnId: 't3' })
+  await clock.advance(60000)
+  const v = await view()
+  expect(v.tails).toEqual(['22m 00s'])
+  // 8 minutes left of 核结果 and 10 of 汇报, never the overrun of six hours taken as as long again
+  expect(v.row).toContain('剩约 18m')
+})
+
+test('another chat waiting on its person shows the time left it had when its work stopped, not one that grows', () => {
+  const t0 = Date.parse('2026-10-29T04:29:00Z')
+  const g = newGoal({ sessionId: 's2', condition: '收尾', now: t0, cwd: '/Users/me/neo-fitness', kind: 'plan' })
+  applyAction(g, { action: 'plan', tasks: [{ title: '核结果', minutes: 30 }, { title: '汇报', minutes: 10 }] }, { now: t0 })
+  Object.assign(g, { active: false, lastTurnEnd: t0 + 20 * 60000 })
+  const at = (ms: number) => eta(g, ms)!.ms
+  expect(at(t0 + 20 * 60000)).toBe(20 * 60000)
+  expect(at(t0 + 5 * 3600000)).toBe(20 * 60000)
+  // its own background work still running: the clock goes on as before
+  g.bg = [{ id: 'b1', title: '门禁', status: 'running', startedAt: t0 + 60000, step: 1 }]
+  expect(at(t0 + 40 * 60000)).toBe(10 * 60000 + 10 * 60000)
+})
+
+test('a step done out of order takes over the clock of the one that had started by itself, its pauses left out too', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  await clock.advance(Date.parse('2026-10-29T04:29:00Z'))
+  await $.turn.start({ text: '做', turnId: 't1' })
+  await tasks('plan', { goal: '收尾', tasks: [{ title: '甲', minutes: 30 }, { title: '乙', minutes: 10 }] })
+  await clock.advance(20 * 60000)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  await clock.advance(4 * 3600000)
+  await $.turn.start({ text: '', turnId: 't2' })
+  await clock.advance(60000)
+  // the work was 乙's all along: 甲 had only started by itself
+  await tasks('done', { id: 2 })
+  const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+  const card = String((await rowImgs(ui)).at(-1)!.props!.source)
+  await ui.unmount()
+  expect([...card.matchAll(/text-anchor="end" class="mute">([^<]*)</g)].map(m => m[1])).toContain('21m 00s')
+})
+
+test('back at work, the plan\'s file says so at once, its clocks moved on past the pause', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  const clock = mock.clock(on)
+  const writes: string[] = []
+  on('env.get', (_$, e) => ({ value: (e as { name: string }).name === 'HOME' ? '/home/me' : undefined }))
+  on('session.start', (_$, e) => ({ ...(e as object) }))
+  on('session.id', () => ({ value: 's1' }))
+  on('session.cwd', () => ({ value: '/Users/me/neo-fitness' }))
+  on('store.get', () => ({ value: undefined }))
+  on('tool.register', () => ({ value: { tool: 'mcp__goal-meter__tasks' } }))
+  on('command.register', () => ({ value: undefined }))
+  on('fs.exists', () => ({ value: false }))
+  on('fs.list', () => ({ value: [] }))
+  on('fs.write', (_$, e) => {
+    const v = Object.values(e as Record<string, unknown>).map(String)
+    if (v.some((x) => x.endsWith('s1.json'))) writes.push(v.find((x) => x.startsWith('{'))!)
+    return { value: undefined }
+  })
+  on('process.run', grepLog(() => ''))
+  const t0 = Date.parse('2026-10-29T04:29:00Z')
+  await clock.advance(t0)
+  await $.session.start({ cwd: '/Users/me/neo-fitness', source: 'startup' } as never)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  await $.turn.start({ text: '做', turnId: 't1' })
+  await tasks('plan', { goal: '收尾', tasks: [{ title: '甲', minutes: 30 }, { title: '乙', minutes: 10 }] })
+  await clock.advance(20 * 60000)
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  for (let h = 0; h < 4; h++) await clock.advance(3600000)
+  await $.turn.start({ text: '', turnId: 't2' })
+  const g = JSON.parse(writes.at(-1)!)
+  expect(g.active).toBe(true)
+  expect(eta(g, t0 + 4 * 3600000 + 21 * 60000)!.ms).toBe(19 * 60000)
+})
+
+test('a plan made in a turn that dies with no Stop does not keep the earlier plan\'s background count', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Box({ children: [] }))
+  on('tool.call', () => ({ result: 'engine' }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+  on('process.run', grepLog(() => ''))
+  const clock = mock.clock(on)
+  const tasks = (action: string, extra = {}) => $.tool.call({ tool: 'mcp__goal-meter__tasks', action, ...extra } as never)
+  await clock.advance(Date.parse('2026-10-29T04:29:00Z'))
+  await $.turn.start({ text: '做', turnId: 't1' })
+  await tasks('plan', { goal: '起服务', tasks: [{ title: '起服务器', minutes: 5 }] })
+  await $.tool.call({ tool: 'Bash', command: 'serve', description: '起服务器', run_in_background: true } as never)
+  await clock.advance(60000)
+  await tasks('done', { id: 1 })
+  await $.classic.Stop({ stop_hook_active: false, background_tasks: [{ id: 'srv', type: 'shell', status: 'running', description: '起服务器', command: 'serve' }] } as never)
+  await $.turn.complete({ reason: 'answer', answer: '', durationMs: 1, isAborted: false, turnId: 't1' })
+  // a new plan, and the turn dies on an error: no Stop
+  await $.turn.start({ text: '下一件', turnId: 't2' })
+  await tasks('plan', { goal: '改文案', tasks: [{ title: '改', minutes: 30 }, { title: '查', minutes: 10 }] })
+  await clock.advance(5 * 60000)
+  await $.turn.complete({ reason: 'error', answer: '', durationMs: 1, isAborted: false, turnId: 't2' })
+  await clock.advance(3600000)
+  const ui = await $.ui.mount({ plugin: 'goal-meter', surface: 'desktop', ...BAND })
+  const card = String((await rowImgs(ui)).at(-1)!.props!.source)
+  await ui.unmount()
+  // nothing of this plan runs: it waits on the person, its clock stopped at 5 minutes
+  expect(card).toContain('⏸')
+  expect(card).toContain('5m 00s')
 })
