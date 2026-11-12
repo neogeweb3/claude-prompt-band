@@ -17,7 +17,7 @@
 import { minutes, duration, clock, clip, bar, basename } from './fmt.mjs'
 import { makeMasker } from './privacy.mjs'
 import { rowOf, rowSvg, rowSpans, describe, stepsSvg, cropSvg, othersSvg, othersCardSvg, fitRow, LINE, FRAME } from './row.mjs'
-import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, endInLog, launchMatch, eta, bgLeft, bgAskDue, bgReestimate, bgForkPrompt, pausedSince, resume, clockOf, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf } from './plan.mjs'
+import { newGoal, applyAction, progress, shown, ownWork, foldBackground, placeBackground, planRunning, stepAt, mainStep, launchInLog, endInLog, launchMatch, eta, bgLeft, bgAskDue, bgReestimate, bgForkPrompt, pausedSince, resume, clockOf, askDue, markAsked, minutesHint, ledgerLine, earlyNudge, lateNudge, reestimate, forkPrompt, minutesIn, parseCheck, isStopWord, normalizeTasks, TOOL_SPEC, instruction, nudge, strictDeny, autoPlan, autoNudge, titleOf, isWatcher } from './plan.mjs'
 
 const DIR = '/.claude/mods-data/goal-meter'
 const PANE = 'goal-meter'
@@ -81,6 +81,8 @@ function visibleTasks(g) {
 // clock, done ✓ with what it took); then work running outside the plan (started before it, or of
 // unknown start), listed last and never counted (Neo, 2026-10-09: three background tasks ran in
 // neo-mate and the card showed one step at work)
+const OUTSIDE_ROWS = 2
+
 function cardRows(g) {
   const bg = Array.isArray(g.bg) ? g.bg : []
   const clock = (b) => (b.startedAt ? duration(Math.max(0, now - b.startedAt)) : '')
@@ -99,9 +101,12 @@ function cardRows(g) {
     }
   }
   for (const b of ownWork(g)) rows.push({ id: 'bg-' + b.id, title: '后台 · ' + b.title, status: b.status === 'running' ? 'active' : 'done', bgRow: true, startedAt: b.startedAt, doneAt: b.doneAt })
-  for (const b of bg) {
-    if (b.outside && b.status === 'running') rows.push({ id: 'bg-' + b.id, title: '计划外 · ' + b.title, status: 'outside', op: true, tail: clock(b) })
-  }
+  // work outside the plan: the longest-running two, then one line for the rest, so it never crowds out
+  // the steps (Neo, 2026-11-12: seven 计划外 rows under seven steps, "内容一多，我就懒得看了")
+  const outside = bg.filter((b) => b.outside && b.status === 'running' && !isWatcher(b))
+    .sort((x, y) => (x.startedAt || Infinity) - (y.startedAt || Infinity))
+  for (const b of outside.slice(0, OUTSIDE_ROWS)) rows.push({ id: 'bg-' + b.id, title: '计划外 · ' + b.title, status: 'outside', op: true, tail: clock(b) })
+  if (outside.length > OUTSIDE_ROWS) rows.push({ id: 'bg-outside-more', title: '计划外还有 ' + (outside.length - OUTSIDE_ROWS) + ' 项', status: 'outside', op: true, tail: '' })
   return rows
 }
 

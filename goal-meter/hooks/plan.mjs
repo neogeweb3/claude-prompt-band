@@ -122,7 +122,13 @@ export function shown(goal) {
 // is no longer running (done, dropped, or none at all) becomes work of its own (`own`, kept from
 // then on). A task that no longer runs is done, at the time its notification gives (`ended`, from
 // the log) or else now. Returns how many of the plan's tasks still run.
+// A watcher Claude Code keeps on each page the Artifact tool publishes ("live updates for artifact
+// https://…"): no tool call of the plan starts it, it runs for the whole chat and does no work, so it
+// is not background work of any plan (Neo, 2026-11-12: six of them filled a card as 计划外 rows).
+export const isWatcher = (b) => /^live updates for artifact\b/i.test(String(b.description || b.title || ''))
+
 export function foldBackground(goal, list, seen, now, ended = new Map()) {
+  list = list.filter((b) => !isWatcher(b))
   const running = new Set(list.map((b) => String(b.id)))
   const bg = Array.isArray(goal.bg) ? goal.bg : (goal.bg = [])
   for (const b of list) {
