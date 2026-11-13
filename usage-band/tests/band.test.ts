@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { bar, desktopSvg, detectStyle, expire, fmtLeft, fmtTokens, hitRate, layout, newer, to256, width } from '../hooks/register'
+import { bar, desktopSvg, detectStyle, expire, fmtLeft, fmtTokens, hitRate, layout, newer, sharedFileFor, to256, width } from '../hooks/register'
 import type { Measure } from '../types'
 
 const BAND = {
@@ -247,4 +247,19 @@ test('the band keeps under what another mod drew above the prompt, never replaci
   expect(await desk.find({ type: 'Text', text: 'goal 40%' })).toBeDefined()
   expect(await desk.find({ type: 'Svg' })).toBeDefined()
   await desk.unmount()
+})
+
+test('the shared reading is kept per account, and nothing is shared with no account on record', async () => {
+  const home = '/Users/a'
+  const cli = (uuid: string) => JSON.stringify({ oauthAccount: { accountUuid: uuid, emailAddress: 'b@example.com' } })
+  // the desktop app on one account, the CLI on another (2026-11-13): two files, never one
+  const app = sharedFileFor(home, '22d0967c-0000-4000-8000-000000000001', cli('a09403d9-0000-4000-8000-000000000002'))
+  const term = sharedFileFor(home, null, cli('a09403d9-0000-4000-8000-000000000002'))
+  expect(app).toBe('/Users/a/.claude/usage-band-shared-22d0967c-0000-4000-8000-000000000001.json')
+  expect(term).toBe('/Users/a/.claude/usage-band-shared-a09403d9-0000-4000-8000-000000000002.json')
+  expect(app).not.toBe(term)
+  // the same account in both shares one file
+  expect(sharedFileFor(home, 'a09403d9-0000-4000-8000-000000000002', null)).toBe(term)
+  for (const bad of [null, '', 'not json', JSON.stringify({}), cli('../../etc'), cli('x')]) expect(sharedFileFor(home, null, bad)).toBeNull()
+  expect(sharedFileFor(null, '22d0967c-0000-4000-8000-000000000001', null)).toBeNull()
 })

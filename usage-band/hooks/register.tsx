@@ -381,6 +381,23 @@ export const newer = (mine: Shared, theirs: unknown): Shared => {
   return s.at > mine.at ? { at: s.at, rateLimits: s.rateLimits } : mine
 }
 
+// The shared reading is per account: windows of one account never show in a session signed in to
+// another (2026-11-13: the desktop app on one account at 94%, the CLI on another at 99%, and the
+// app's band took the CLI's 99%). The desktop app names its account in CLAUDE_CODE_ACCOUNT_UUID; the
+// CLI keeps it in .claude.json (oauthAccount.accountUuid). With no account on record, nothing is shared.
+export const sharedFileFor = (home: string | null, accountEnv: string | null, cliConfig: string | null): string | null => {
+  if (!home) return null
+  let account = (accountEnv ?? '').trim()
+  if (!account && cliConfig) {
+    try {
+      account = String((JSON.parse(cliConfig) as { oauthAccount?: { accountUuid?: unknown } })?.oauthAccount?.accountUuid ?? '')
+    } catch {
+      account = ''
+    }
+  }
+  return /^[A-Za-z0-9-]{8,64}$/.test(account) ? `${home}/.claude/usage-band-shared-${account}.json` : null
+}
+
 let sharedPath: string | null = null
 let mine: Shared = { at: 0, rateLimits: [] }
 
@@ -469,7 +486,10 @@ export const register: Register = on => {
     setting = ((await $.env.get('USAGE_BAND_ICONS')) ?? 'auto').trim().toLowerCase() || 'auto'
     const term = await $.env.get('TERM_PROGRAM')
     const home = await $.env.get('HOME')
-    sharedPath = home ? `${home}/.claude/usage-band-shared.json` : null
+    const accountEnv = (await $.env.get('CLAUDE_CODE_ACCOUNT_UUID')) ?? null
+    const configDir = (await $.env.get('CLAUDE_CONFIG_DIR')) || home
+    const cliConfig = home && !accountEnv ? await $.fs.read(`${configDir}/.claude.json`).catch(() => null) : null
+    sharedPath = sharedFileFor(home ?? null, accountEnv, typeof cliConfig === 'string' ? cliConfig : null)
     await update($, style, () => detectStyle(setting, term))
     await $.command.register({
       name: PREVIEW,
